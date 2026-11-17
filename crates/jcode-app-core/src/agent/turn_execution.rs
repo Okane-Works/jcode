@@ -64,6 +64,8 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
+        self.run_user_prompt_submit_hook(user_message, "run")
+            .await?;
         let turn_started_at = Instant::now();
         let start_message_index = self.message_count();
         self.fire_turn_start_hook("run");
@@ -211,6 +213,18 @@ impl Agent {
         // Jarvis input already has a user echo (or a turn-start pickup).
         if continues_turn || display_role.is_some_and(|role| role != crate::session::StoredDisplayRole::JarvisUser) {
             self.emit_context_messages_since(input_start, &event_tx);
+        } else {
+            // Only a genuine user submission reaches the prompt hook. Synthetic
+            // continuations and machine-authored messages (background-task
+            // wakes, lane updates) are skipped, and a failover retry never
+            // comes through this function.
+            let context_start = self.session.messages.len();
+            if self
+                .run_user_prompt_submit_hook(&user_message, "chat")
+                .await?
+            {
+                self.emit_context_messages_since(context_start, &event_tx);
+            }
         }
         // The per-turn reminder (swarm DM wake, mission continuation, ...) goes
         // into the transcript after the prompt, never into the system prompt.
@@ -373,6 +387,55 @@ impl Agent {
         self.session.save()
     }
 
+    /// A hook event carrying the fields every session-scoped hook gets:
+    /// session id, working directory, `TRANSCRIPT_PATH` (the session snapshot
+    /// file, see docs/SESSION_FORMAT.md) and, for a child session,
+    /// `PARENT_SESSION_ID`.
+    pub(crate) fn session_hook_event(&self, event_name: &'static str) -> crate::hooks::HookEvent {
+        let mut event =
+            crate::hooks::HookEvent::new(event_name).session_id(self.session.id.clone());
+        if let Some(cwd) = self.working_dir() {
+            event = event.cwd(cwd);
+        }
+        if let Ok(path) = crate::session::session_path(&self.session.id) {
+            event = event.field("TRANSCRIPT_PATH", path.to_string_lossy().into_owned());
+        }
+        if let Some(parent) = self.session.parent_id.as_deref() {
+            event = event.field("PARENT_SESSION_ID", parent.to_string());
+        }
+        event
+    }
+
+    /// Run the synchronous `user_prompt_submit` hooks for a genuine user
+    /// prompt and persist any context they return as a tail
+    /// `<system-reminder>` message, which keeps the cached prompt prefix
+    /// intact. Returns whether a message was appended. No-op (without
+    /// building the payload) when the hook is not configured or the prompt is
+    /// empty. Hook failures never fail the turn.
+    async fn run_user_prompt_submit_hook(&mut self, prompt: &str, source: &str) -> Result<bool> {
+        if prompt.trim().is_empty() || !crate::hooks::hook_configured("user_prompt_submit") {
+            return Ok(false);
+        }
+        let event = self
+            .session_hook_event("user_prompt_submit")
+            .field("MODEL", self.provider_model())
+            .field("SOURCE", source.to_string());
+        let outcome = crate::hooks::run_user_prompt_submit(&event, prompt).await;
+        // There is no user-only channel for hook notices yet, so they are
+        // logged rather than shown.
+        for message in &outcome.system_messages {
+            logging::info(&format!(
+                "Hook 'user_prompt_submit' systemMessage for session {}: {message}",
+                self.session.id
+            ));
+        }
+        let Some(context) = outcome.context.filter(|text| !text.trim().is_empty()) else {
+            return Ok(false);
+        };
+        self.append_turn_system_reminder(&context)?;
+        Ok(true)
+    }
+
     /// Fire the `turn_start` observer hook when a turn begins, before the model
     /// starts generating (and before the first `pre_tool`). This lets external
     /// integrations (terminal multiplexers, status bars) detect that the agent
@@ -383,13 +446,10 @@ impl Agent {
         if !crate::hooks::hook_configured("turn_start") {
             return;
         }
-        let mut event = crate::hooks::HookEvent::new("turn_start")
-            .session_id(self.session.id.clone())
+        let event = self
+            .session_hook_event("turn_start")
             .field("MODEL", self.provider_model())
             .field("SOURCE", source.to_string());
-        if let Some(cwd) = self.working_dir() {
-            event = event.cwd(cwd);
-        }
         crate::hooks::dispatch_observer(event);
     }
 
@@ -405,14 +465,11 @@ impl Agent {
             return;
         }
         let status = if result.is_ok() { "ok" } else { "error" };
-        let mut event = crate::hooks::HookEvent::new("turn_end")
-            .session_id(self.session.id.clone())
+        let mut event = self
+            .session_hook_event("turn_end")
             .field("STATUS", status)
             .field("DURATION_MS", started_at.elapsed().as_millis().to_string())
             .field("MODEL", self.provider_model());
-        if let Some(cwd) = self.working_dir() {
-            event = event.cwd(cwd);
-        }
         if let Some(text) = self.latest_assistant_text_after(start_message_index) {
             const LAST_TEXT_LIMIT: usize = 4000;
             let snippet: String = text.chars().take(LAST_TEXT_LIMIT).collect();

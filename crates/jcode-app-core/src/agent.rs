@@ -1261,13 +1261,10 @@ impl Agent {
         if !crate::hooks::hook_configured(event_name) {
             return;
         }
-        let mut event = crate::hooks::HookEvent::new(event_name)
-            .session_id(self.session.id.clone())
+        let event = self
+            .session_hook_event(event_name)
             .field("SOURCE", source)
             .field("MODEL", self.provider_model());
-        if let Some(cwd) = self.working_dir() {
-            event = event.cwd(cwd);
-        }
         crate::hooks::dispatch_observer(event);
     }
 

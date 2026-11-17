@@ -828,6 +828,17 @@ pub struct HooksConfig {
     pub pre_tool_transform: Option<HookCommands>,
     /// Max milliseconds to wait for each input transformer (default: 500).
     pub pre_tool_transform_timeout_ms: u64,
+    /// Synchronous hook that runs once per genuine user prompt, after the
+    /// message is persisted and before `turn_start`. Receives one JSON event
+    /// on stdin (`prompt`, `session_id`, `cwd`, `model`, `source`,
+    /// `transcript_path`). On exit 0 it may print a JSON object whose
+    /// `hookSpecificOutput.additionalContext` is appended to the transcript as
+    /// a `<system-reminder>` message. Any failure adds nothing.
+    /// Env override: JCODE_HOOK_USER_PROMPT_SUBMIT.
+    pub user_prompt_submit: Option<HookCommands>,
+    /// Max milliseconds to wait for each user_prompt_submit hook (default:
+    /// 30000). Env override: JCODE_HOOK_USER_PROMPT_SUBMIT_TIMEOUT_MS.
+    pub user_prompt_submit_timeout_ms: u64,
     /// Runs when an agent turn begins (after the user message is added and
     /// before the model starts generating). Fires before the first `pre_tool`,
     /// so integrations can detect that the agent is actively working even while
@@ -873,6 +884,8 @@ impl Default for HooksConfig {
         Self {
             pre_tool_transform: None,
             pre_tool_transform_timeout_ms: 500,
+            user_prompt_submit: None,
+            user_prompt_submit_timeout_ms: 30_000,
             turn_start: None,
             turn_end: None,
             session_start: None,

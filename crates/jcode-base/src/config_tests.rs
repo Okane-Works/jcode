@@ -1734,3 +1734,27 @@ fn browser_handoff_defaults_off_and_roundtrips() {
 
 #[path = "config_tests_additional_tests.rs"]
 mod additional_hibernation_environment_override_accepts_seconds_and_zero_but_not_invalid_values;
+
+#[test]
+fn hooks_config_parses_user_prompt_submit_and_ignores_unknown_keys() {
+    let defaults = Config::default().hooks;
+    assert_eq!(defaults.user_prompt_submit, None);
+    assert_eq!(defaults.user_prompt_submit_timeout_ms, 30_000);
+
+    // A config written for a newer jcode (or by an installer that knows more
+    // hook events) must still load: unknown `[hooks]` keys are ignored.
+    let cfg: Config = toml::from_str(
+        "[hooks]\nuser_prompt_submit = [\"ctx-a\", \"ctx-b\"]\nuser_prompt_submit_timeout_ms = 1234\nsome_future_hook = \"future-cmd\"\nsome_future_hook_timeout_ms = 5\n",
+    )
+    .expect("unknown hook keys must not fail config parsing");
+    assert_eq!(
+        cfg.hooks
+            .user_prompt_submit
+            .as_ref()
+            .expect("user_prompt_submit commands")
+            .iter()
+            .collect::<Vec<_>>(),
+        vec!["ctx-a", "ctx-b"]
+    );
+    assert_eq!(cfg.hooks.user_prompt_submit_timeout_ms, 1234);
+}

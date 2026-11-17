@@ -626,3 +626,213 @@ async fn hook_process_replaces_daemon_terminal_env_with_client_snapshot() {
         "client-pane-b|herdr-pane-b|client-pane-b|herdr-pane-b"
     );
 }
+
+#[cfg(unix)]
+fn env_test_config(vars: &[(&'static str, String)]) -> impl Drop + use<> {
+    struct EnvReset(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for EnvReset {
+        fn drop(&mut self) {
+            for (key, previous) in self.0.drain(..) {
+                match previous {
+                    Some(value) => crate::env::set_var(key, value),
+                    None => crate::env::remove_var(key),
+                }
+            }
+        }
+    }
+    let reset = EnvReset(
+        vars.iter()
+            .map(|(key, _)| (*key, std::env::var_os(key)))
+            .collect(),
+    );
+    for (key, value) in vars {
+        crate::env::set_var(key, value);
+    }
+    reset
+}
+
+#[cfg(unix)]
+fn prompt_hook_config(hook: String, timeout_ms: u64) -> impl Drop + use<> {
+    env_test_config(&[
+        ("JCODE_HOOK_USER_PROMPT_SUBMIT", hook),
+        (
+            "JCODE_HOOK_USER_PROMPT_SUBMIT_TIMEOUT_MS",
+            timeout_ms.to_string(),
+        ),
+    ])
+}
+
+#[cfg(unix)]
+fn prompt_event() -> HookEvent {
+    HookEvent::new("user_prompt_submit")
+        .session_id("ses_prompt")
+        .field("MODEL", "test-model")
+        .field("SOURCE", "chat")
+        .field("TRANSCRIPT_PATH", "/tmp/sessions/ses_prompt.json")
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn user_prompt_submit_returns_json_context_and_receives_event_on_stdin() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let record = temp.path().join("stdin.json");
+    let script = write_executable_script(
+        temp.path(),
+        "context.sh",
+        &format!(
+            "#!/bin/sh\ncat > {}\nprintf '%s' '{{\"systemMessage\":\"for the user\",\"hookSpecificOutput\":{{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"remembered fact\"}}}}'\n",
+            crate::terminal_launch::sh_escape(&record.to_string_lossy())
+        ),
+    );
+    let _env = prompt_hook_config(script.to_string_lossy().to_string(), 5000);
+    // Larger than the 16 KB env payload cap: stdin must carry it whole.
+    let prompt = format!("what did we decide? {}", "x".repeat(40 * 1024));
+
+    let outcome = run_user_prompt_submit(&prompt_event(), &prompt).await;
+
+    assert_eq!(outcome.context.as_deref(), Some("remembered fact"));
+    assert_eq!(outcome.system_messages, ["for the user"]);
+    let stdin: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).expect("stdin recorded"))
+            .expect("stdin is one JSON object");
+    assert_eq!(stdin["event"], "user_prompt_submit");
+    assert_eq!(stdin["session_id"], "ses_prompt");
+    assert_eq!(stdin["prompt"], prompt.as_str());
+    assert_eq!(stdin["model"], "test-model");
+    assert_eq!(stdin["source"], "chat");
+    assert_eq!(stdin["transcript_path"], "/tmp/sessions/ses_prompt.json");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn user_prompt_submit_ignores_plain_stdout_and_fails_open() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let context = r#"{"hookSpecificOutput":{"additionalContext":"must not appear"}}"#;
+    let plain = write_executable_script(temp.path(), "plain.sh", "#!/bin/sh\necho plain text\n");
+    let invalid = write_executable_script(temp.path(), "invalid.sh", "#!/bin/sh\necho '{nope'\n");
+    let failing = write_executable_script(
+        temp.path(),
+        "failing.sh",
+        &format!("#!/bin/sh\nprintf '%s' '{context}'\nexit 3\n"),
+    );
+    let slow = write_executable_script(
+        temp.path(),
+        "slow.sh",
+        &format!("#!/bin/sh\nsleep 5\nprintf '%s' '{context}'\n"),
+    );
+    let missing = temp.path().join("does-not-exist");
+
+    for hook in [&plain, &invalid, &failing, &missing] {
+        let _env = prompt_hook_config(hook.to_string_lossy().to_string(), 5000);
+        assert_eq!(
+            run_user_prompt_submit(&prompt_event(), "hello").await,
+            PromptHookOutcome::default(),
+            "{} must contribute nothing",
+            hook.display()
+        );
+    }
+
+    let _env = prompt_hook_config(slow.to_string_lossy().to_string(), 100);
+    let started = std::time::Instant::now();
+    assert_eq!(
+        run_user_prompt_submit(&prompt_event(), "hello").await,
+        PromptHookOutcome::default()
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "a timed-out hook must not delay the turn past its deadline"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn user_prompt_submit_concatenates_commands_and_caps_each_context() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let first = write_executable_script(
+        temp.path(),
+        "first.sh",
+        "#!/bin/sh\nprintf '%s' '{\"hookSpecificOutput\":{\"additionalContext\":\"first\"}}'\n",
+    );
+    let broken = write_executable_script(temp.path(), "broken.sh", "#!/bin/sh\nexit 1\n");
+    let big = write_executable_script(
+        temp.path(),
+        "big.sh",
+        "#!/bin/sh\nprintf '{\"hookSpecificOutput\":{\"additionalContext\":\"'\nhead -c 40000 /dev/zero | tr '\\0' 'b'\nprintf '\"}}'\n",
+    );
+    let _env = prompt_hook_config(
+        format!(
+            "[{:?}, {:?}, {:?}]",
+            first.to_string_lossy(),
+            broken.to_string_lossy(),
+            big.to_string_lossy()
+        ),
+        5000,
+    );
+
+    let context = run_user_prompt_submit(&prompt_event(), "hello")
+        .await
+        .context
+        .expect("context from the working hooks");
+
+    let (head, tail) = context.split_once("\n\n").expect("two sections");
+    assert_eq!(head, "first");
+    let capped = tail
+        .strip_suffix("\n[context truncated]")
+        .expect("oversized context is marked truncated");
+    assert_eq!(capped.len(), PROMPT_CONTEXT_LIMIT);
+    assert!(capped.bytes().all(|byte| byte == b'b'));
+}
+
+#[cfg(unix)]
+#[test]
+fn observer_receives_uncapped_json_event_on_stdin() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let record = temp.path().join("stdin.json");
+    let done = temp.path().join("done");
+    let script = write_executable_script(
+        temp.path(),
+        "observe-stdin.sh",
+        &format!(
+            "#!/bin/sh\ncat > {}\nprintf '%s' \"${{#JCODE_HOOK_PAYLOAD}}\" > {}\n",
+            crate::terminal_launch::sh_escape(&record.to_string_lossy()),
+            crate::terminal_launch::sh_escape(&done.to_string_lossy())
+        ),
+    );
+    let _env = env_test_config(&[("JCODE_HOOK_TURN_END", script.to_string_lossy().to_string())]);
+    let long_text = "t".repeat(PAYLOAD_ENV_LIMIT * 2);
+
+    dispatch_observer(
+        HookEvent::new("turn_end")
+            .session_id("ses_stdin")
+            .field("STATUS", "ok")
+            .field("TRANSCRIPT_PATH", "/tmp/sessions/ses_stdin.json")
+            .field("PARENT_SESSION_ID", "ses_parent")
+            .field("LAST_ASSISTANT_TEXT", long_text.clone()),
+    );
+
+    let mut env_payload_len = String::new();
+    for _ in 0..200 {
+        if let Ok(data) = std::fs::read_to_string(&done)
+            && !data.is_empty()
+        {
+            env_payload_len = data;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // The env copy keeps its cap; stdin carries the whole event.
+    assert_eq!(env_payload_len, PAYLOAD_ENV_LIMIT.to_string());
+    let stdin: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).expect("stdin recorded"))
+            .expect("observer stdin is one complete JSON object");
+    assert_eq!(stdin["event"], "turn_end");
+    assert_eq!(stdin["session_id"], "ses_stdin");
+    assert_eq!(stdin["status"], "ok");
+    assert_eq!(stdin["transcript_path"], "/tmp/sessions/ses_stdin.json");
+    assert_eq!(stdin["parent_session_id"], "ses_parent");
+    assert_eq!(stdin["last_assistant_text"], long_text.as_str());
+}

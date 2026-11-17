@@ -56,7 +56,7 @@ fn current_tip(_max_width: usize) -> Tip {
 }
 
 pub(crate) fn occasional_status_tip(max_width: usize, elapsed_secs: u64) -> Option<String> {
-    if max_width < 16 {
+    if max_width < 16 || crate::openrig::is_seat() {
         return None;
     }
 

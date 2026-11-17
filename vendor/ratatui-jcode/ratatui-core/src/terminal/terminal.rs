@@ -138,6 +138,12 @@ where
     frame_count: usize,
     /// ratatui-jcode: number of cell updates emitted by the most recent flush.
     last_flush_updates: usize,
+    /// ratatui-jcode: cursor state (`None` hidden, `Some(pos)` shown at pos)
+    /// the terminal is known to be in after the last draw. A frame with no
+    /// cell updates and an unchanged cursor writes nothing at all, so an idle
+    /// redraw is byte-silent (terminal multiplexers read any output as
+    /// activity).
+    last_cursor_state: Option<Option<Position>>,
 }
 
 /// Options to pass to [`Terminal::with_options`]
@@ -241,6 +247,7 @@ where
             last_known_cursor_pos: cursor_pos,
             frame_count: 0,
             last_flush_updates: 0,
+            last_cursor_state: None,
         })
     }
 
@@ -318,6 +325,14 @@ where
         let current_buffer = &self.buffers[self.current];
         let updates = previous_buffer.diff(current_buffer);
         self.last_flush_updates = updates.len();
+        if updates.is_empty() {
+            // Nothing changed: some backends still emit style resets for an
+            // empty diff, so skip the call entirely.
+            return Ok(());
+        }
+        // Cell output moves the terminal cursor; its position must be
+        // re-established after this draw.
+        self.last_cursor_state = None;
         if let Some((col, row, _)) = updates.last() {
             self.last_known_cursor_pos = Position { x: *col, y: *row };
         }
@@ -553,12 +568,15 @@ where
         // Draw to stdout
         self.flush()?;
 
-        match cursor_position {
-            None => self.hide_cursor()?,
-            Some(position) => {
-                self.show_cursor()?;
-                self.set_cursor_position(position)?;
+        if self.last_cursor_state != Some(cursor_position) {
+            match cursor_position {
+                None => self.hide_cursor()?,
+                Some(position) => {
+                    self.show_cursor()?;
+                    self.set_cursor_position(position)?;
+                }
             }
+            self.last_cursor_state = Some(cursor_position);
         }
 
         self.swap_buffers();
@@ -579,10 +597,71 @@ where
         Ok(completed_frame)
     }
 
+    /// ratatui-jcode: like [`Terminal::draw`], but writes nothing when the
+    /// frame has no cell changes and the cursor state is unchanged.
+    /// `before_output` runs once, just before the first byte is written (for
+    /// example to open a synchronized update). Returns the completed frame and
+    /// whether anything was written. Terminal multiplexers treat any pane
+    /// output as activity, so idle redraws must be byte-silent.
+    pub fn draw_if_changed<F, G>(
+        &mut self,
+        render_callback: F,
+        before_output: G,
+    ) -> Result<(CompletedFrame<'_>, bool), B::Error>
+    where
+        F: FnOnce(&mut Frame),
+        G: FnOnce(&mut B) -> Result<(), B::Error>,
+    {
+        self.autoresize()?;
+        let mut frame = self.get_frame();
+        render_callback(&mut frame);
+        let cursor_position = frame.cursor_position;
+
+        let updates = self.buffers[1 - self.current].diff(&self.buffers[self.current]);
+        let cursor_changed = self.last_cursor_state != Some(cursor_position);
+        let wrote = !updates.is_empty() || cursor_changed;
+        self.last_flush_updates = updates.len();
+        if wrote {
+            before_output(&mut self.backend)?;
+        }
+        if !updates.is_empty() {
+            if let Some((col, row, _)) = updates.last() {
+                self.last_known_cursor_pos = Position { x: *col, y: *row };
+            }
+            self.backend.draw(updates.into_iter())?;
+            self.last_cursor_state = None;
+        }
+        if self.last_cursor_state != Some(cursor_position) {
+            match cursor_position {
+                None => self.hide_cursor()?,
+                Some(position) => {
+                    self.show_cursor()?;
+                    self.set_cursor_position(position)?;
+                }
+            }
+            self.last_cursor_state = Some(cursor_position);
+        }
+
+        self.swap_buffers();
+        if wrote {
+            self.backend.flush()?;
+        }
+
+        let completed_frame = CompletedFrame {
+            buffer: &self.buffers[1 - self.current],
+            area: self.last_known_area,
+            count: self.frame_count,
+            flushed_updates: self.last_flush_updates,
+        };
+        self.frame_count = self.frame_count.wrapping_add(1);
+        Ok((completed_frame, wrote))
+    }
+
     /// Hides the cursor.
     pub fn hide_cursor(&mut self) -> Result<(), B::Error> {
         self.backend.hide_cursor()?;
         self.hidden_cursor = true;
+        self.last_cursor_state = Some(None);
         Ok(())
     }
 
@@ -590,6 +669,7 @@ where
     pub fn show_cursor(&mut self) -> Result<(), B::Error> {
         self.backend.show_cursor()?;
         self.hidden_cursor = false;
+        self.last_cursor_state = None;
         Ok(())
     }
 
@@ -621,11 +701,20 @@ where
         let position = position.into();
         self.backend.set_cursor_position(position)?;
         self.last_known_cursor_pos = position;
+        self.last_cursor_state = (!self.hidden_cursor).then_some(Some(position));
         Ok(())
+    }
+
+    /// ratatui-jcode: forget the known cursor state so the next draw
+    /// re-emits cursor visibility and position. Call after writing to the
+    /// terminal outside of ratatui (e.g. a cursor save/restore).
+    pub fn invalidate_cursor_state(&mut self) {
+        self.last_cursor_state = None;
     }
 
     /// Clear the terminal and force a full redraw on the next draw call.
     pub fn clear(&mut self) -> Result<(), B::Error> {
+        self.last_cursor_state = None;
         match self.viewport {
             Viewport::Fullscreen => self.backend.clear_region(ClearType::All)?,
             Viewport::Inline(_) => {

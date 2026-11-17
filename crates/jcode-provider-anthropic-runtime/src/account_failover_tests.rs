@@ -576,6 +576,7 @@ fn http_retry_decision_with_policy(
                     output_config: None,
                     temperature: None,
                     service_tier: None,
+                    speed: None,
                     stream: true,
                 },
                 tx,

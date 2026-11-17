@@ -553,6 +553,7 @@ impl StatusSpinnerRenderer {
         // and doubles scene work while potentially diverging from the screen.
         self.remember_partial_frame(terminal.current_buffer_mut(), area);
         self.swap_after_animation_frame(terminal);
+        terminal.invalidate_cursor_state();
         terminal.backend_mut().flush()?;
         // Without this the animation-only path was invisible in `draw-stats`:
         // `partial_repaints` stayed at 0 while this path served ~60 repaints a
@@ -578,11 +579,19 @@ impl StatusSpinnerRenderer {
         app.enter_idle_hibernation(self.last_frame.as_ref());
         let invalidation = full_frame_invalidation(app.force_full_redraw, app.force_full_repaint);
         let force_full_redraw = invalidation != FullFrameInvalidation::None;
+        if force_full_redraw {
+            terminal.invalidate_cursor_state();
+        }
         // Wrap the whole frame (optional clear + diff flush) in a synchronized update so the
         // terminal applies every cell change atomically. Without this, ratatui's crossterm
         // backend streams cells one-by-one and eagerly-repainting terminals (and slow/remote or
-        // multiplexed sessions) show visible flicker. See issue #282.
-        let sync = crossterm::execute!(terminal.backend_mut(), BeginSynchronizedUpdate).is_ok();
+        // multiplexed sessions) show visible flicker. See issue #282. A frame with nothing to
+        // write opens no update at all: idle redraws stay byte-silent, which terminal
+        // multiplexers (and OpenRig's activity reading) otherwise count as pane activity.
+        let mut sync = false;
+        if invalidation == FullFrameInvalidation::HardClear {
+            sync = crossterm::execute!(terminal.backend_mut(), BeginSynchronizedUpdate).is_ok();
+        }
         match invalidation {
             FullFrameInvalidation::HardClear => {
                 terminal.clear()?;
@@ -604,11 +613,21 @@ impl StatusSpinnerRenderer {
         let draw_start = Instant::now();
         let mut render_elapsed = Duration::ZERO;
         super::oauth_telemetry::begin_frame();
-        let completed = terminal.draw(|frame| {
-            let render_start = Instant::now();
-            crate::tui::ui::draw(frame, app);
-            render_elapsed = render_start.elapsed();
-        })?;
+        let opened_sync = std::cell::Cell::new(false);
+        let (completed, _wrote) = terminal.draw_if_changed(
+            |frame| {
+                let render_start = Instant::now();
+                crate::tui::ui::draw(frame, app);
+                render_elapsed = render_start.elapsed();
+            },
+            |backend| {
+                if !sync {
+                    opened_sync.set(crossterm::execute!(backend, BeginSynchronizedUpdate).is_ok());
+                }
+                Ok(())
+            },
+        )?;
+        let sync = sync || opened_sync.get();
         let total_elapsed = draw_start.elapsed();
         // ratatui-jcode reports how many cells its own diff emitted, so there is
         // no second full-buffer comparison here.
@@ -716,6 +735,7 @@ impl StatusSpinnerRenderer {
         if patched && let Some(previous) = self.last_frame.as_mut() {
             previous[(area.x, area.y)] = cell;
         }
+        terminal.invalidate_cursor_state();
         terminal.backend_mut().flush()?;
         // The working buffer remains reset. A later animation repaint must seed it.
         self.seeded_animation_area = None;

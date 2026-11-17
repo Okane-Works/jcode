@@ -1662,6 +1662,10 @@ pub struct App {
     // default effort (low by default) and silently runs the newly selected
     // model at the wrong effort (issue #427).
     pending_reasoning_effort: Option<String>,
+    // Launch-flag session settings (--effort / --fast), applied once after the
+    // remote session connects, exactly as typing /effort and /fast would.
+    startup_reasoning_effort: Option<String>,
+    startup_service_tier: Option<String>,
     // Remote SetModel has been sent but ModelChanged has not arrived yet. User
     // prompts submitted in this window are held so the first request cannot race
     // the model switch and use stale provider/model state.

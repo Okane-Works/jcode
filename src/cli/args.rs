@@ -121,6 +121,16 @@ pub(crate) struct Args {
     #[arg(short, long, global = true)]
     pub(crate) model: Option<String>,
 
+    /// Reasoning effort to request for this session once connected
+    /// (e.g. low, medium, high). Equivalent to running /effort <level>.
+    #[arg(long, global = true)]
+    pub(crate) effort: Option<String>,
+
+    /// Fast mode (provider priority tier) for this session: on or off.
+    /// Equivalent to running /fast on|off after launch.
+    #[arg(long, global = true, value_parser = ["on", "off"])]
+    pub(crate) fast: Option<String>,
+
     /// Named provider profile from [providers.<name>] in config.toml.
     /// Implies --provider openai-compatible for OpenAI-compatible profiles.
     #[arg(long, global = true)]

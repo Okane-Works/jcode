@@ -783,6 +783,9 @@ impl RemoteConnection {
         // Reset per-call watermark before sending the next user request.
         self.reset_call_output_tokens_seen();
 
+        // OpenRig seat activity: one submitted message is one prompt.
+        crate::openrig_activity::prompt_submitted();
+
         let id = self.next_request_id;
         let request = Request::Message {
             id,

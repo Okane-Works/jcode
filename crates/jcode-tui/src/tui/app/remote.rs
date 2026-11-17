@@ -133,6 +133,23 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             ));
         }
     }
+    // Launch flags --effort / --fast: apply once, after the session has
+    // attached, exactly as typing /effort <level> and /fast on|off would.
+    if remote.has_loaded_history() {
+        if let Some(effort) = app.startup_reasoning_effort.take() {
+            match remote.set_reasoning_effort(&effort).await {
+                Ok(()) => app.remote_reasoning_effort = Some(effort),
+                Err(error) => crate::logging::warn(&format!(
+                    "Launch flag --effort {effort} failed: {error}"
+                )),
+            }
+        }
+        if let Some(tier) = app.startup_service_tier.take()
+            && let Err(error) = remote.set_service_tier(&tier).await
+        {
+            crate::logging::warn(&format!("Launch flag --fast ({tier}) failed: {error}"));
+        }
+    }
     needs_redraw |= app.retire_expired_status_notice();
     needs_redraw |= app.poll_usage_reset();
     needs_redraw |= app.poll_cloud_job();

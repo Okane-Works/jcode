@@ -675,6 +675,9 @@ fn auth_doctor_provider_arg<'a>(
 /// protocol requires.
 fn apply_openrig_launch(args: &mut Args) {
     let launch = crate::openrig::capture();
+    // Also capture (and scrub) the activity-hook credential now, before any
+    // daemon or helper process is spawned with this environment.
+    crate::openrig_activity::capture();
     if !launch.is_openrig_launch() {
         return;
     }
@@ -777,6 +780,15 @@ use subcommand_mapping::*;
 
 async fn run_default_command(args: Args) -> Result<()> {
     startup_profile::mark("run_main_none_branch");
+    // Stage --effort / --fast for the TUI session. These are per-session
+    // requests (the same paths /effort and /fast use), so they apply even
+    // when a server is already running.
+    if args.effort.is_some() || args.fast.is_some() {
+        let tier = args.fast.as_deref().map(|mode| {
+            if mode == "on" { "priority".to_string() } else { "off".to_string() }
+        });
+        let _ = tui_launch::LAUNCH_SESSION_SETTINGS.set((args.effort.clone(), tier));
+    }
     // The TUI's first frame reads the auth snapshot (welcome/onboarding gate).
     // Probe it now on a side thread so it overlaps the setup work below.
     crate::auth::AuthStatus::prewarm_fast_in_background();

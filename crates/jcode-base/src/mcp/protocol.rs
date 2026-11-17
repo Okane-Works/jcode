@@ -694,8 +694,9 @@ impl McpConfig {
         merged
     }
 
-    /// Load from default locations (merges jcode global + local, local overrides),
-    /// resolving project-local config against the process working directory.
+    /// Load from default locations. Precedence, lowest to highest: Claude Code
+    /// global (`~/.claude.json`), Claude Code legacy (`~/.claude/mcp.json`),
+    /// jcode global (`~/.jcode/mcp.json`), then project-local files. Resolves project-local config against the process working directory.
     pub fn load() -> Self {
         let cwd = std::env::current_dir().ok();
         Self::load_for_dir(cwd.as_deref())
@@ -719,16 +720,6 @@ impl McpConfig {
 
         let mut merged = Self::default();
         let claude_mcp_enabled = std::env::var_os("JCODE_DISABLE_CLAUDE_MCP").is_none();
-
-        // Load jcode's own global config (~/.jcode/mcp.json)
-        if let Ok(jcode_dir) = crate::storage::jcode_dir() {
-            let jcode_mcp = jcode_dir.join("mcp.json");
-            if jcode_mcp.exists() {
-                if let Ok(config) = Self::load_from_file(&jcode_mcp) {
-                    merged.servers.extend(config.servers);
-                }
-            }
-        }
 
         // Claude Code user/global config (~/.claude.json): top-level mcpServers
         // plus per-project entries for the project directory.
@@ -764,6 +755,19 @@ impl McpConfig {
                     ));
                 }
                 Self::merge_servers_preferring_runnable(&mut merged.servers, config.servers);
+            }
+        }
+
+        // jcode's own global config (~/.jcode/mcp.json) outranks every Claude
+        // Code global source: a server the user configured for jcode must not
+        // be silently replaced by a same-named Claude entry (which may carry a
+        // different command or environment).
+        if let Ok(jcode_dir) = crate::storage::jcode_dir() {
+            let jcode_mcp = jcode_dir.join("mcp.json");
+            if jcode_mcp.exists() {
+                if let Ok(config) = Self::load_from_file(&jcode_mcp) {
+                    merged.servers.extend(config.servers);
+                }
             }
         }
 

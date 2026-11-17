@@ -17,13 +17,17 @@ session_end   = ""                            # observer
 pre_tool      = "~/bin/jcode-tool-policy"     # gate
 post_tool     = ""                            # observer
 post_tool_feedback = "~/bin/jcode-vale"       # feeds output back to the model
+user_prompt_submit = "~/bin/jcode-prompt-context"  # adds context to a prompt
 pre_tool_timeout_ms = 5000
 post_tool_feedback_timeout_ms = 10000
+user_prompt_submit_timeout_ms = 30000
 ```
 
-All eight command keys (`pre_tool_transform`, `turn_start`, `turn_end`,
-`session_start`, `session_end`, `pre_tool`, `post_tool`, and
-`post_tool_feedback`) accept either a command string or an array of strings.
+All nine command keys (`pre_tool_transform`, `user_prompt_submit`,
+`turn_start`, `turn_end`, `session_start`, `session_end`, `pre_tool`,
+`post_tool`, and `post_tool_feedback`) accept either a command string or an
+array of strings. Unknown keys under `[hooks]` are ignored, so a config that
+names a hook from a newer jcode still loads on an older one.
 Independent plugins can share an event without a dispatcher:
 
 ```toml
@@ -35,14 +39,15 @@ pre_tool = ["~/bin/jcode-tool-policy", "~/bin/jcode-audit-policy"]
 Empty or whitespace-only commands are skipped. Observer commands are spawned
 in declaration order but run independently, so completion order is unspecified.
 Gate commands run sequentially in declaration order, even after a block, and
-the first blocking result is returned. Transformers and feedback hooks also
-run sequentially in declaration order, as described below.
+the first blocking result is returned. Transformers, feedback hooks, and
+prompt hooks also run sequentially in declaration order, as described below.
 
 Env overrides (always win; empty value disables a config hook):
 `JCODE_HOOK_TURN_START`, `JCODE_HOOK_TURN_END`, `JCODE_HOOK_SESSION_START`, `JCODE_HOOK_SESSION_END`,
 `JCODE_HOOK_PRE_TOOL`, `JCODE_HOOK_POST_TOOL`, `JCODE_HOOK_PRE_TOOL_TIMEOUT_MS`,
 `JCODE_HOOK_POST_TOOL_FEEDBACK`, `JCODE_HOOK_POST_TOOL_FEEDBACK_TIMEOUT_MS`,
-`JCODE_HOOK_PRE_TOOL_TRANSFORM`, `JCODE_HOOK_PRE_TOOL_TRANSFORM_TIMEOUT_MS`.
+`JCODE_HOOK_PRE_TOOL_TRANSFORM`, `JCODE_HOOK_PRE_TOOL_TRANSFORM_TIMEOUT_MS`,
+`JCODE_HOOK_USER_PROMPT_SUBMIT`, `JCODE_HOOK_USER_PROMPT_SUBMIT_TIMEOUT_MS`.
 Command overrides accept a command string or a TOML array of strings, for
 example `JCODE_HOOK_TURN_END='["notify-one", "notify-two"]'`.
 
@@ -56,23 +61,50 @@ example `JCODE_HOOK_TURN_END='["notify-one", "notify-two"]'`.
 
 | Variable | Meaning |
 | --- | --- |
-| `JCODE_HOOK_EVENT` | `turn_start`, `turn_end`, `session_start`, `session_end`, `pre_tool`, `post_tool`, `post_tool_feedback`, `pre_tool_transform` |
+| `JCODE_HOOK_EVENT` | `turn_start`, `turn_end`, `session_start`, `session_end`, `pre_tool`, `post_tool`, `post_tool_feedback`, `pre_tool_transform`, `user_prompt_submit` |
 | `JCODE_HOOK_SESSION_ID` | Session the event belongs to |
 | `JCODE_HOOK_CWD` | Session working directory |
 | `JCODE_HOOK_PAYLOAD` | JSON object mirroring all fields (capped at 16 KB) |
 | `JCODE_HOOKS_DISABLED` | Always `1`; suppresses hooks in nested jcode calls (recursion guard) |
 
+The turn and session hooks (`user_prompt_submit`, `turn_start`, `turn_end`,
+`session_start`, `session_end`) also receive:
+
+| Variable | Meaning |
+| --- | --- |
+| `JCODE_HOOK_TRANSCRIPT_PATH` | Absolute path of the session snapshot file. See [SESSION_FORMAT.md](SESSION_FORMAT.md) for how to read it together with its journal |
+| `JCODE_HOOK_PARENT_SESSION_ID` | Parent session id. Only set for a child session |
+
+### JSON event
+
+Every field is also available as one JSON object: `event`, `session_id`,
+`cwd`, and each `JCODE_HOOK_<NAME>` variable under the lowercased key `<name>`
+(for example `transcript_path`). All values are strings.
+
+- `JCODE_HOOK_PAYLOAD` holds that object, cut off at 16 KB. A cut-off value is
+  not valid JSON.
+- Observer hooks and `user_prompt_submit` receive the complete object on
+  **stdin**, with no size cap. Prefer stdin when the hook parses JSON.
+- `pre_tool`, `post_tool_feedback`, and `pre_tool_transform` use stdin for the
+  tool input instead.
+
 ## Observer hooks
 
 `turn_start`, `turn_end`, `session_start`, `session_end`, and `post_tool` are
 **observers**: spawned detached, fire-and-forget. The agent does not wait for
-their completion; failures are only logged.
+their completion; failures are only logged. Stdout and stderr are discarded,
+so an observer cannot return anything to the model or the user. Each observer
+gets the [JSON event](#json-event) on stdin.
 
 ### `turn_start`
 
 Fires before model generation and the first tool call in the `chat` entrypoint
 (which uses the streaming turn loop) and one-shot `run` path. Extra fields:
 `JCODE_HOOK_MODEL` and `JCODE_HOOK_SOURCE` (`chat` or `run`, respectively).
+
+`JCODE_HOOK_SOURCE` is `failover` when the server re-runs the current turn on
+another route after the previous account hit a usage limit. No new user
+message exists for that run, and `turn_end` fires again when it finishes.
 
 There are no distinct `resume` or `ambient` source values dispatched by the
 current implementation. Those labels in older config comments are not a
@@ -151,6 +183,86 @@ while IFS= read -r path; do
   esac
 done <<<"$JCODE_HOOK_TOUCHED_PATHS"
 exit 0
+```
+
+## Prompt hook: `user_prompt_submit`
+
+`user_prompt_submit` runs **synchronously once per user prompt** and can add
+context for the model. It fires after the user message is saved and before
+`turn_start`, in both the `chat` and one-shot `run` paths.
+
+It fires only for a prompt the user submitted. It does not fire for:
+
+- synthetic continuations, such as the reminder-only turn after a reload
+- machine-authored messages (background-task wakes, swarm and lane updates,
+  notifications), which are stored with a `display_role`
+- failover retries, which re-run the turn without a new message
+- an empty prompt
+
+**Input.** One JSON object on stdin, uncapped, with string values:
+
+```json
+{
+  "event": "user_prompt_submit",
+  "session_id": "session_fox_1794927464955_439e5d418915c243",
+  "cwd": "/home/me/project",
+  "prompt": "where do we deploy?",
+  "model": "claude-fable-5-2",
+  "source": "chat",
+  "transcript_path": "/home/me/.jcode/sessions/session_fox_1794927464955_439e5d418915c243.json",
+  "parent_session_id": "session_owl_1794920000000_0123456789abcdef"
+}
+```
+
+`prompt` is the text the user typed, without any suffix jcode adds for the
+model. It is delivered on stdin only: there is no `JCODE_HOOK_PROMPT` variable
+and `JCODE_HOOK_PAYLOAD` omits it. `source` is `chat` or `run`.
+`parent_session_id` is present only for a child session. The other fields are
+also set as `JCODE_HOOK_*` variables.
+
+**Output.** On exit 0 the hook may print one JSON object on stdout:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "Deploy target is fly.io (decided 2026-11-02)."
+  },
+  "systemMessage": "Recalled 1 memory"
+}
+```
+
+- `hookSpecificOutput.additionalContext` (string, capped at 32 KB per hook) is
+  appended to the transcript right after the prompt, wrapped in
+  `<system-reminder>` tags. The model sees it on this turn and on every later
+  turn. It is stored with `display_role: "system"`, so clients render it as a
+  system entry and transcript readers can tell it apart from user text.
+- `systemMessage` (string) is meant for the user and is never sent to the
+  model. jcode currently writes it to the log only. It is not shown in the UI.
+- Other fields, including `hookEventName`, are ignored.
+
+The context is a message at the tail of the transcript, not a change to the
+prompt or the system prompt, so it does not invalidate the cached conversation
+prefix.
+
+**Failures add nothing and never block the prompt:** a timeout
+(`user_prompt_submit_timeout_ms`, default 30s), a non-zero exit, a spawn
+failure, stdout that is not a JSON object, or a missing `additionalContext`.
+Stderr is discarded. Multiple hooks run in declaration order and their
+contexts are joined by a blank line into one message.
+
+The model does not start until every hook has exited, so the user waits for
+the slowest one on each prompt. Keep the common case fast.
+
+```bash
+#!/usr/bin/env bash
+# ~/bin/jcode-prompt-context: add the current branch to every prompt
+event=$(cat)
+cwd=$(jq -r '.cwd // empty' <<<"$event")
+branch=$(git -C "${cwd:-.}" branch --show-current 2>/dev/null) || exit 0
+[ -n "$branch" ] || exit 0
+jq -n --arg ctx "Current git branch: $branch" \
+  '{hookSpecificOutput: {additionalContext: $ctx}}'
 ```
 
 ## Gate hook: `pre_tool`
@@ -261,7 +373,8 @@ Point several hooks at one script and fan out on `JCODE_HOOK_EVENT`:
 ```bash
 #!/usr/bin/env bash
 # ~/bin/jcode-event-log
-echo "$JCODE_HOOK_PAYLOAD" >> ~/.local/state/jcode-events.jsonl
+# Observers get the complete event as one JSON object on stdin.
+{ cat; echo; } >> ~/.local/state/jcode-events.jsonl
 ```
 
 ```toml

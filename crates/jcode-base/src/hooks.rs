@@ -22,6 +22,13 @@
 //!   the tool result the model sees (e.g. linter findings for an edited file).
 //!   Timeouts and spawn failures add nothing.
 //!
+//! - **Prompt context** (`user_prompt_submit`): jcode waits (with a timeout)
+//!   once per genuine user prompt. The hook receives the JSON event on stdin
+//!   and may print a JSON object whose `hookSpecificOutput.additionalContext`
+//!   is appended to the transcript for the model. Every failure adds nothing.
+//!
+//! Observers also receive the full JSON event on stdin.
+//!
 //! Hook processes get `JCODE_HOOKS_DISABLED=1` in their environment so a
 //! hook that itself invokes jcode does not recursively trigger hooks.
 
@@ -47,6 +54,21 @@ const FEEDBACK_LIMIT: usize = 8 * 1024;
 
 /// Maximum bytes of `additionalContext` accepted from one pre_tool hook.
 const GATE_CONTEXT_LIMIT: usize = 8 * 1024;
+
+/// Maximum bytes of `additionalContext` accepted from one
+/// `user_prompt_submit` hook command.
+const PROMPT_CONTEXT_LIMIT: usize = 32 * 1024;
+
+/// What the `user_prompt_submit` hooks returned for one prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptHookOutcome {
+    /// `hookSpecificOutput.additionalContext` from every command, in
+    /// declaration order, joined by blank lines. Shown to the model.
+    pub context: Option<String>,
+    /// Top-level `systemMessage` values, in declaration order. Meant for the
+    /// user, never for the model.
+    pub system_messages: Vec<String>,
+}
 
 /// Decision returned by the `pre_tool` gate hook.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +258,7 @@ pub fn hook_commands(event: &str) -> Vec<String> {
         "pre_tool" => hooks.pre_tool.as_ref(),
         "post_tool" => hooks.post_tool.as_ref(),
         "post_tool_feedback" => hooks.post_tool_feedback.as_ref(),
+        "user_prompt_submit" => hooks.user_prompt_submit.as_ref(),
         _ => None,
     };
     raw.into_iter()
@@ -441,8 +464,16 @@ fn json_prefix(value: &serde_json::Value, limit: usize) -> String {
     }
 }
 
-/// JSON payload mirroring the env fields, exported as `JCODE_HOOK_PAYLOAD`.
+/// JSON payload mirroring the env fields, exported as `JCODE_HOOK_PAYLOAD`
+/// (capped at 16 KB; the uncapped object goes to stdin where supported).
 fn payload_json(event: &HookEvent) -> String {
+    let payload = serde_json::Value::Object(event_json(event)).to_string();
+    truncate_bytes(&payload, PAYLOAD_ENV_LIMIT).to_string()
+}
+
+/// The event as a JSON object: `event`, `session_id`, `cwd`, and every field
+/// under its lowercased key. Uncapped.
+fn event_json(event: &HookEvent) -> serde_json::Map<String, Value> {
     let mut map = serde_json::Map::new();
     map.insert(
         "event".to_string(),
@@ -463,8 +494,7 @@ fn payload_json(event: &HookEvent) -> String {
             serde_json::Value::String(value.clone()),
         );
     }
-    let payload = serde_json::Value::Object(map).to_string();
-    truncate_bytes(&payload, PAYLOAD_ENV_LIMIT).to_string()
+    map
 }
 
 fn apply_event_env(cmd: &mut std::process::Command, event: &HookEvent) {
@@ -527,14 +557,20 @@ pub fn dispatch_observer(event: HookEvent) {
         return;
     }
     let event_name = event.event;
+    // Observers get the whole event on stdin, without the 16 KB cap that
+    // applies to the `JCODE_HOOK_PAYLOAD` env copy.
+    let stdin_payload = Value::Object(event_json(&event)).to_string();
     for command_line in command_lines {
         match build_hook_process(&command_line, &event) {
             Ok(mut cmd) => {
-                cmd.stdin(std::process::Stdio::null())
+                cmd.stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null());
                 match crate::platform::spawn_detached_without_console_window(&mut cmd) {
-                    Ok(child) => {
+                    Ok(mut child) => {
+                        if let Some(stdin) = child.stdin.take() {
+                            write_observer_stdin(stdin, stdin_payload.clone());
+                        }
                         crate::platform::reap_detached(child);
                         crate::logging::debug(&format!(
                             "Hook '{event_name}' dispatched to '{command_line}' (session={:?})",
@@ -550,6 +586,24 @@ pub fn dispatch_observer(event: HookEvent) {
                 "Hook '{event_name}' command '{command_line}' is invalid: {error}"
             )),
         }
+    }
+}
+
+/// Deliver the event JSON to a detached observer and close its stdin.
+///
+/// Runs on its own thread so a hook that never reads stdin cannot block the
+/// caller once the pipe buffer fills. A hook that exits without reading closes
+/// the pipe, which is fine.
+fn write_observer_stdin(mut stdin: std::process::ChildStdin, payload: String) {
+    let write = move || {
+        use std::io::Write;
+        let _ = stdin.write_all(payload.as_bytes());
+    };
+    if let Err(error) = std::thread::Builder::new()
+        .name("jcode-hook-stdin".to_string())
+        .spawn(write)
+    {
+        crate::logging::warn(&format!("Hook stdin writer failed to start: {error}"));
     }
 }
 
@@ -794,6 +848,138 @@ async fn run_post_tool_feedback_command(
         text.push_str("\n[feedback truncated]");
     }
     Some(text)
+}
+
+/// Run the `user_prompt_submit` hooks for one user prompt, in declaration
+/// order, and collect the context they return.
+///
+/// Each hook receives the event env vars and one JSON object on stdin: the
+/// event fields plus `prompt` (the raw user text, which is not exported to the
+/// environment because it has no size bound). On exit 0 a hook may print a
+/// JSON object; `hookSpecificOutput.additionalContext` (capped at 32 KB per
+/// hook) is returned for the model and top-level `systemMessage` for the user.
+/// Everything else fails open and contributes nothing: timeout, non-zero exit,
+/// spawn failure, and stdout that is not a JSON object.
+pub async fn run_user_prompt_submit(event: &HookEvent, prompt: &str) -> PromptHookOutcome {
+    let command_lines = hook_commands("user_prompt_submit");
+    let mut outcome = PromptHookOutcome::default();
+    if command_lines.is_empty() {
+        return outcome;
+    }
+    let timeout = std::time::Duration::from_millis(
+        crate::config::config()
+            .hooks
+            .user_prompt_submit_timeout_ms
+            .max(1),
+    );
+    let mut stdin_event = event_json(event);
+    stdin_event.insert("prompt".to_string(), Value::String(prompt.to_string()));
+    let stdin_json = Value::Object(stdin_event).to_string();
+
+    let mut contexts = Vec::new();
+    for command_line in command_lines {
+        let Some(stdout) =
+            run_user_prompt_submit_command(&command_line, event, &stdin_json, timeout).await
+        else {
+            continue;
+        };
+        let (context, system_message) = parse_prompt_hook_stdout(&stdout);
+        contexts.extend(context);
+        outcome.system_messages.extend(system_message);
+    }
+    if !contexts.is_empty() {
+        outcome.context = Some(contexts.join("\n\n"));
+    }
+    outcome
+}
+
+/// Extract `(additionalContext, systemMessage)` from a prompt hook's stdout.
+/// Uses the same field names as the `pre_tool` gate's JSON output.
+fn parse_prompt_hook_stdout(stdout: &str) -> (Option<String>, Option<String>) {
+    let trimmed = stdout.trim();
+    if !trimmed.starts_with('{') {
+        return (None, None);
+    }
+    let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+        crate::logging::warn("Hook 'user_prompt_submit' printed invalid JSON on stdout (ignored)");
+        return (None, None);
+    };
+    let specific = value.get("hookSpecificOutput").unwrap_or(&Value::Null);
+    let context = json_str(specific, "additionalContext").map(|text| {
+        let mut capped = truncate_bytes(text, PROMPT_CONTEXT_LIMIT).to_string();
+        if capped.len() < text.len() {
+            capped.push_str("\n[context truncated]");
+        }
+        capped
+    });
+    let system_message = json_str(&value, "systemMessage").map(str::to_string);
+    (context, system_message)
+}
+
+/// Run one `user_prompt_submit` command and return its stdout on exit 0.
+async fn run_user_prompt_submit_command(
+    command_line: &str,
+    event: &HookEvent,
+    stdin_json: &str,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    let std_cmd = match build_hook_process(command_line, event) {
+        Ok(cmd) => cmd,
+        Err(error) => {
+            crate::logging::warn(&format!(
+                "Hook 'user_prompt_submit' command '{command_line}' is invalid: {error}"
+            ));
+            return None;
+        }
+    };
+    let mut cmd = tokio::process::Command::from(std_cmd);
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            crate::logging::warn(&format!(
+                "Hook 'user_prompt_submit' command '{command_line}' failed to start: {error}"
+            ));
+            return None;
+        }
+    };
+    // Keep the stdin write under the deadline too: a hook that never reads
+    // stdin could otherwise block once the pipe fills.
+    let output = match tokio::time::timeout(timeout, async {
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(stdin_json.as_bytes()).await;
+        }
+        child.wait_with_output().await
+    })
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            crate::logging::warn(&format!(
+                "Hook 'user_prompt_submit' command '{command_line}' failed: {error}"
+            ));
+            return None;
+        }
+        Err(_elapsed) => {
+            crate::logging::warn(&format!(
+                "Hook 'user_prompt_submit' command '{command_line}' timed out after {}ms (continuing without context)",
+                timeout.as_millis()
+            ));
+            return None;
+        }
+    };
+    if !output.status.success() {
+        crate::logging::warn(&format!(
+            "Hook 'user_prompt_submit' command '{command_line}' exited with {:?} (continuing without context)",
+            output.status.code()
+        ));
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(test)]

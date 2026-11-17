@@ -825,6 +825,14 @@ swarm_stall_after_secs = 600
 # the tool result the model sees, so linters can report findings inline.
 # post_tool_feedback = "~/bin/jcode-vale"
 # post_tool_feedback_timeout_ms = 10000
+#
+# Synchronous hook once per user prompt, before turn_start. Receives a JSON
+# event on stdin (prompt, session_id, cwd, model, source, transcript_path). On
+# exit 0 it may print {"hookSpecificOutput":{"additionalContext":"..."}}; that
+# text is appended to the transcript as a <system-reminder> for the model.
+# Timeouts, non-zero exits, and invalid output add nothing.
+# user_prompt_submit = "~/bin/jcode-prompt-context"
+# user_prompt_submit_timeout_ms = 30000
 
 [ambient]
 # Ambient mode: background agent that maintains your codebase

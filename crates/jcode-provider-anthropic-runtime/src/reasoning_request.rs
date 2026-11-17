@@ -4,6 +4,23 @@ use jcode_provider_anthropic::{ApiRequest, ApiThinking, ApiThinkingBlockBinding}
 use jcode_provider_core::anthropic::anthropic_thinking_always_on;
 
 const BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
+
+/// Add the fast-mode beta header when the request asks for `speed: "fast"`
+/// on a model where fast mode is still a preview (Opus 5, Opus 4.8).
+pub(super) fn with_fast_mode_beta(base: &str, request: &ApiRequest) -> String {
+    let needs_beta = request.speed.as_deref() == Some("fast")
+        && AnthropicProvider::fast_mode_support(&request.model) == Some(true);
+    if needs_beta && !base.split(',').any(|header| header.trim() == FAST_MODE_BETA) {
+        if base.is_empty() {
+            FAST_MODE_BETA.to_string()
+        } else {
+            format!("{base},{FAST_MODE_BETA}")
+        }
+    } else {
+        base.to_string()
+    }
+}
 
 pub(super) fn adaptive_thinking(model: &str) -> ApiThinking {
     ApiThinking::Adaptive {
@@ -82,10 +99,13 @@ impl RetrySettings {
                 resolved,
                 request.max_tokens,
             );
-        request.service_tier = self
+        request.service_tier = None;
+        request.speed = self
             .service_tier
-            .clone()
-            .filter(|_| AnthropicProvider::model_supports_priority_service_tier(model));
+            .as_deref()
+            .filter(|tier| *tier == "auto")
+            .filter(|_| AnthropicProvider::model_supports_priority_service_tier(model))
+            .map(|_| "fast".to_string());
     }
 }
 
@@ -131,6 +151,7 @@ mod tests {
             output_config: None,
             temperature: None,
             service_tier: None,
+            speed: None,
             stream: true,
         }
     }
@@ -172,6 +193,8 @@ mod tests {
                 assert_eq!(wire["max_tokens"], 128_000);
                 assert!(wire.get("temperature").is_none());
                 assert!(wire.get("service_tier").is_none());
+                assert_eq!(wire["speed"], "fast");
+                assert_eq!(with_fast_mode_beta("", &request), "");
                 assert_eq!(with_binding_beta("", &request.thinking), BINDING_BETA);
             }
         }
@@ -189,12 +212,14 @@ mod tests {
         settings.reshape(&mut request, "claude-opus-4-8", true);
         let wire = serde_json::to_value(&request).unwrap();
         assert_eq!(wire["output_config"]["effort"], "xhigh");
-        assert_eq!(wire["service_tier"], "auto");
+        assert_eq!(wire["speed"], "fast");
+        assert!(wire.get("service_tier").is_none());
+        assert_eq!(with_fast_mode_beta("x", &request), "x,fast-mode-2026-02-01");
         assert!(wire["thinking"].get("block_binding").is_none());
         assert_eq!(with_binding_beta("existing", &request.thinking), "existing");
         settings.reshape(&mut request, "claude-haiku-4-5", true);
         assert_eq!(request.max_tokens, 64_000);
-        assert!(request.service_tier.is_none());
+        assert!(request.speed.is_none());
     }
 
     #[test]

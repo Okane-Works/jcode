@@ -135,6 +135,9 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             ));
         }
     }
+    // Launch settings (--model, --effort, --fast): applied once after the
+    // session has attached, exactly as /model, /effort and /fast would.
+    followups::apply_startup_session_settings(app, remote).await;
     needs_redraw |= app.retire_expired_status_notice();
     needs_redraw |= app.poll_usage_reset();
     needs_redraw |= app.poll_cloud_job();
@@ -1280,6 +1283,9 @@ pub(super) fn handle_disconnect(
     state: &mut RemoteRunState,
     reason: Option<RemoteDisconnectReason>,
 ) {
+    // A restarted daemon forgets per-session env overlays; re-send the seat
+    // identity once the next connection has attached.
+    app.seat_env_applied_session = None;
     // The daemon may have applied the switch, but the acknowledgement was
     // lost. Never wait on an old connection's request ID or blindly resend.
     if app.pending_automatic_failover_request_id.is_some() {

@@ -154,7 +154,10 @@ pub(super) fn auto_theme_enabled() -> bool {
 
 pub(super) fn runtime_queries_enabled() -> bool {
     use std::io::IsTerminal;
-    auto_theme_enabled()
+    // OpenRig seats must stay byte-silent while idle; each query is pane
+    // output that OpenRig would read as work.
+    !crate::openrig::is_seat()
+        && auto_theme_enabled()
         && std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && terminal_background_query_supported(

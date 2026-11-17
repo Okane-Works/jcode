@@ -1992,6 +1992,7 @@ fn opus_55_request_json_supports_api_and_oauth_without_forced_tools() {
                         output_config,
                         temperature,
                         service_tier: None,
+                        speed: None,
                         stream: true,
                     };
                     let value = serde_json::to_value(&request).unwrap();

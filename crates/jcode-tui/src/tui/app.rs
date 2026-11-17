@@ -960,6 +960,23 @@ pub(crate) struct AdvertisedHistoryBase {
     pub(crate) images: Option<Vec<crate::session::RenderedImage>>,
 }
 
+/// Per-session settings requested at launch (`--model` on an already-running
+/// daemon, `--effort`, `--fast`). Applied once after the remote session
+/// attaches, in order: model first, then effort and tier against the
+/// confirmed model, and only then the first prompt.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StartupSessionSettings {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub service_tier: Option<String>,
+}
+
+impl StartupSessionSettings {
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none() && self.reasoning_effort.is_none() && self.service_tier.is_none()
+    }
+}
+
 pub struct App {
     provider: Arc<dyn Provider>,
     registry: Registry,
@@ -1667,6 +1684,17 @@ pub struct App {
     // default effort (low by default) and silently runs the newly selected
     // model at the wrong effort (issue #427).
     pending_reasoning_effort: Option<String>,
+    // Launch session settings (--model on an attached daemon, --effort,
+    // --fast), applied once after the remote session connects, exactly as
+    // typing /model, /effort and /fast would. The model goes first; effort
+    // and tier wait for its ModelChanged so they bind to the new provider.
+    startup_model: Option<String>,
+    startup_reasoning_effort: Option<String>,
+    startup_service_tier: Option<String>,
+    // Session id that last received this seat's OpenRig identity overlay.
+    // Cleared on disconnect so a reconnect (possibly to a restarted daemon,
+    // which forgets overlays) re-applies it.
+    seat_env_applied_session: Option<String>,
     // Remote SetModel has been sent but ModelChanged has not arrived yet. User
     // prompts submitted in this window are held so the first request cannot race
     // the model switch and use stale provider/model state.

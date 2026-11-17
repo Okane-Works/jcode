@@ -14,6 +14,12 @@ pub fn has_requested_action(run_result: &RunResult) -> bool {
 }
 
 pub fn execute_requested_action(run_result: &RunResult) -> Result<()> {
+    if has_requested_action(run_result) {
+        // Reload/update/restart exec back into jcode in this same pane. The
+        // successor keeps reporting for this OpenRig seat, so hand the
+        // scrubbed activity credential back to the exec environment.
+        crate::openrig_activity::reexport_for_exec();
+    }
     if let Some(ref reload_session_id) = run_result.reload_session {
         hot_reload(reload_session_id)?;
     }

@@ -153,9 +153,9 @@ assistant's reply with a tool call:
 
 ## Compatibility
 
-- The format has no version field. Changes are additive: jcode adds fields,
-  block types, and `display_role` values, and does not remove or repurpose the
-  ones documented here.
+- The format has no version field. Changes so far have been additive: new
+  fields, block types, and `display_role` values, without removing or
+  repurposing the ones documented here. This is not a formal guarantee.
 - Readers must ignore fields, block types, `status` values, and `display_role`
   values they do not know. Treat an unknown `display_role` as machine-authored.
 - Everything not described on this page is internal and can change in any

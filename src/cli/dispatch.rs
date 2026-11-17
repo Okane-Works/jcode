@@ -50,6 +50,9 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
     if args.resume.as_deref() == Some("") {
         return tui_launch::list_sessions();
     }
+    if args.command.is_none() {
+        apply_openrig_launch(&mut args);
+    }
     resolve_resume_arg(&mut args)?;
 
     // One-time config migration: users whose config.toml still carries the old
@@ -666,6 +669,37 @@ fn auth_doctor_provider_arg<'a>(
     })
 }
 
+/// Map an OpenRig community-harness launch onto ordinary CLI arguments.
+/// Explicit flags win over the protocol variables. A resume of a conversation
+/// that no longer exists is reported as missing and starts nothing, as the
+/// protocol requires.
+fn apply_openrig_launch(args: &mut Args) {
+    let launch = crate::openrig::capture();
+    // Also capture (and scrub) the activity-hook credential now, before any
+    // daemon or helper process is spawned with this environment.
+    crate::openrig_activity::capture();
+    // Snapshot the public seat identity for this session's tool overlay.
+    crate::openrig::seat_identity();
+    if !launch.is_openrig_launch() {
+        return;
+    }
+    if args.model.is_none() {
+        args.model = launch.model.clone();
+    }
+    if args.resume.is_none()
+        && let Some(resume_ref) = launch.resume_ref.as_deref()
+    {
+        match resolve_resume_id(resume_ref) {
+            Ok(full_id) => args.resume = Some(full_id),
+            Err(err) => {
+                crate::openrig::report_missing();
+                eprintln!("Error: OpenRig asked to resume {resume_ref}: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
 fn resolve_resume_arg(args: &mut Args) -> Result<()> {
     if let Some(ref resume_id) = args.resume {
         let resume_id = resume_id.clone();
@@ -748,6 +782,17 @@ use subcommand_mapping::*;
 
 async fn run_default_command(args: Args) -> Result<()> {
     startup_profile::mark("run_main_none_branch");
+    // Stage --effort / --fast for the TUI session. These are per-session
+    // requests (the same paths /effort and /fast use), so they apply even
+    // when a server is already running. The model is staged below, once we
+    // know whether a running daemon will ignore it.
+    let mut startup_settings = crate::tui::StartupSessionSettings {
+        model: None,
+        reasoning_effort: args.effort.clone(),
+        service_tier: args.fast.as_deref().map(|mode| {
+            if mode == "on" { "priority".to_string() } else { "off".to_string() }
+        }),
+    };
     // The TUI's first frame reads the auth snapshot (welcome/onboarding gate).
     // Probe it now on a side thread so it overlaps the setup work below.
     crate::auth::AuthStatus::prewarm_fast_in_background();
@@ -859,7 +904,22 @@ async fn run_default_command(args: Args) -> Result<()> {
         .await;
     }
 
-    if server_running && explicit_provider_or_model {
+    // A running daemon ignores --model (it only seeds a newly spawned server),
+    // so apply it to this client's session instead, like `/model` would. Every
+    // OpenRig seat after the first attaches this way, and each seat may ask for
+    // a different model.
+    if server_running && let Some(model) = args.model.as_deref() {
+        startup_settings.model = Some(model.to_string());
+    }
+    if !startup_settings.is_empty() {
+        let _ = tui_launch::LAUNCH_SESSION_SETTINGS.set(startup_settings);
+    }
+
+    if server_running && args.model.is_some() && args.provider != ProviderChoice::Auto {
+        output::stderr_info(
+            "Server already running; --provider only applies when starting a new server. The --model is applied to this session.",
+        );
+    } else if server_running && explicit_provider_or_model && args.model.is_none() {
         output::stderr_info(
             "Server already running; provider/model flags only apply when starting a new server.",
         );
@@ -1359,6 +1419,12 @@ async fn spawn_server_with_lifetime(
         .ok_or_else(|| anyhow::anyhow!("Could not determine executable path for server spawn"))?;
     let mut cmd = ProcessCommand::new(&exe);
     cmd.env_remove(selfdev::CLIENT_SELFDEV_ENV);
+    // The daemon is shared by every seat; it must not inherit the identity
+    // of whichever seat happened to start it. Seats pass their identity per
+    // session instead (SetSessionEnv).
+    for key in crate::openrig::SEAT_SCOPED_ENV {
+        cmd.env_remove(key);
+    }
     if client_requested_selfdev {
         cmd.env("JCODE_DEBUG_CONTROL", "1");
     }

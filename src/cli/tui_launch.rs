@@ -134,6 +134,13 @@ mod turn_envelope_tests {
     }
 }
 
+/// Launch session settings staged by the CLI before the TUI starts and
+/// consumed once when the app is constructed: the requested model (only when
+/// the client attaches to an already-running daemon, which ignores `--model`),
+/// reasoning effort (`--effort`), and service tier (`--fast`).
+pub static LAUNCH_SESSION_SETTINGS: std::sync::OnceLock<tui::StartupSessionSettings> =
+    std::sync::OnceLock::new();
+
 pub async fn run_tui_client(
     resume_session: Option<String>,
     startup_hints: Option<setup_hints::StartupHints>,
@@ -199,6 +206,9 @@ pub async fn run_tui_client(
     startup_profile::mark("terminal_title");
 
     let mut app = tui::App::new_for_remote_with_options(resume_session.clone(), fresh_spawn);
+    if let Some(settings) = LAUNCH_SESSION_SETTINGS.get() {
+        app.set_startup_session_settings(settings.clone());
+    }
     if should_show_server_spawning(server_spawning).await {
         app.set_server_spawning();
     }
@@ -214,6 +224,14 @@ pub async fn run_tui_client(
     {
         apply_startup_hints(&mut app, hints);
     }
+    if let Some(first_input) = crate::openrig::read_first_input(crate::openrig::capture()) {
+        app.queue_startup_message(first_input);
+    }
+    // Capture (and scrub from the child environment) the OpenRig activity
+    // credential before the TUI spawns any processes, and start reporting so
+    // an idle seat reads idle from launch.
+    crate::openrig_activity::capture();
+    crate::openrig_activity::start();
 
     startup_profile::mark("pre_run_remote");
     startup_profile::report_to_log();
@@ -266,6 +284,7 @@ pub async fn run_tui_client(
     tui_runtime.finish_for_run_result(&run_result, false);
 
     if let Some(code) = run_result.exit_code {
+        crate::openrig_activity::report_exited();
         std::process::exit(code);
     }
 
@@ -283,6 +302,7 @@ pub async fn run_tui_client(
     if !has_requested_action(&run_result) {
         // The user quit (reload/update exec back into jcode in this pane and
         // keep reporting, so they must not release it).
+        crate::openrig_activity::report_exited();
         crate::tui::herdr::release();
     }
 

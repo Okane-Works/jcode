@@ -796,7 +796,41 @@ impl AnthropicProvider {
     }
 
     fn model_supports_priority_service_tier(model: &str) -> bool {
-        Self::normalized_model_key(model).contains("claude-opus-4-8")
+        Self::fast_mode_support(model).is_some()
+    }
+
+    /// Fast mode (`speed: "fast"`) availability for `model`: `Some(false)`
+    /// when generally available, `Some(true)` when it still needs the
+    /// `fast-mode-2026-02-01` beta header, `None` when unsupported. Per
+    /// Anthropic's fast-mode docs: GA on Opus 5.5, Fable 5.2 and Mythos 5.2;
+    /// beta (research preview / deprecated) on Opus 5 and Opus 4.8.
+    fn fast_mode_support(model: &str) -> Option<bool> {
+        let key = Self::normalized_model_key(model);
+        let key = key.strip_prefix("anthropic/").unwrap_or(&key);
+        // Exact family or a dated snapshot (`-YYYYMMDD`), so `claude-opus-5`
+        // never claims `claude-opus-5-1`.
+        let family = |prefix: &str| {
+            key == prefix
+                || key.strip_prefix(prefix).is_some_and(|rest| {
+                    rest.len() == 9
+                        && rest.starts_with('-')
+                        && rest[1..].chars().all(|c| c.is_ascii_digit())
+                })
+        };
+        if family("claude-opus-5-5") || family("claude-fable-5-2") || family("claude-mythos-5-2") {
+            Some(false)
+        } else if family("claude-opus-5") || family("claude-opus-4-8") {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
+    /// The `speed` request field for `model`: `"fast"` when fast mode is
+    /// switched on and the model supports it, otherwise omitted.
+    fn fast_speed_for_model(&self, model: &str) -> Option<String> {
+        (self.current_service_tier_for_model(model).as_deref() == Some("auto"))
+            .then(|| "fast".to_string())
     }
 
     fn normalize_service_tier(raw: &str) -> Result<Option<String>> {
@@ -1309,6 +1343,7 @@ mod canonical_input_tests {
                 output_config: None,
                 temperature: Some(0.5),
                 service_tier: None,
+                speed: None,
                 stream: true,
             };
             let messages = serde_json::to_value(&request.messages).unwrap();
@@ -1400,7 +1435,8 @@ impl Provider for AnthropicProvider {
             thinking,
             output_config,
             temperature,
-            service_tier: self.current_service_tier_for_model(&model),
+            service_tier: None,
+            speed: self.fast_speed_for_model(&model),
             stream: true,
         };
 
@@ -1698,7 +1734,10 @@ impl Provider for AnthropicProvider {
         if normalized.as_deref() == Some("auto")
             && !Self::model_supports_priority_service_tier(&self.model())
         {
-            anyhow::bail!("Anthropic priority fast tier is only supported for Claude Opus 4.8");
+            anyhow::bail!(
+                "Anthropic fast mode is supported on Claude Opus 5.5, Fable 5.2 and Mythos 5.2 (and Opus 5 / 4.8 in preview), not {}",
+                self.model()
+            );
         }
         *self
             .service_tier
@@ -1846,7 +1885,8 @@ impl Provider for AnthropicProvider {
             thinking,
             output_config,
             temperature,
-            service_tier: self.current_service_tier_for_model(&model),
+            service_tier: None,
+            speed: self.fast_speed_for_model(&model),
             stream: true,
         };
 
@@ -2032,6 +2072,7 @@ async fn stream_response(
             request.thinking.is_some(),
         );
         let beta_header = reasoning_request::with_binding_beta(&beta_header, &request.thinking);
+        let beta_header = reasoning_request::with_fast_mode_beta(&beta_header, request);
         req = apply_oauth_attribution_headers(
             req.header("Authorization", format!("Bearer {}", token))
                 .header("User-Agent", CLAUDE_CLI_USER_AGENT)
@@ -2049,6 +2090,7 @@ async fn stream_response(
         let beta_header =
             anthropic_beta_header_with_thinking(beta_header, request.thinking.is_some());
         let beta_header = reasoning_request::with_binding_beta(&beta_header, &request.thinking);
+        let beta_header = reasoning_request::with_fast_mode_beta(&beta_header, request);
         req = match direct_transport.auth_mode.as_str() {
             "none" => req,
             "bearer" => req.header("Authorization", format!("Bearer {token}")),

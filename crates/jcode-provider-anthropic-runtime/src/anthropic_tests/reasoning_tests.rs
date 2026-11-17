@@ -383,7 +383,7 @@ fn test_anthropic_max_alias_uses_strongest_real_effort() {
 }
 
 #[test]
-fn test_anthropic_opus_48_fast_mode_service_tier_serializes_priority() {
+fn test_anthropic_opus_48_fast_mode_serializes_speed_fast() {
     let provider = AnthropicProvider::new();
     provider.set_model("claude-opus-4-8").unwrap();
 
@@ -403,17 +403,42 @@ fn test_anthropic_opus_48_fast_mode_service_tier_serializes_priority() {
         thinking: None,
         output_config: None,
         temperature: None,
-        service_tier: provider.current_service_tier_for_model(&provider.model()),
+        service_tier: None,
+        speed: provider.fast_speed_for_model(&provider.model()),
         stream: true,
     };
     let value = serde_json::to_value(&request).unwrap();
 
     assert_eq!(value["model"], "claude-opus-4-8");
-    assert_eq!(value["service_tier"], "auto");
+    assert_eq!(value["speed"], "fast");
+    assert!(value.get("service_tier").is_none());
 }
 
 #[test]
-fn test_anthropic_fast_mode_is_limited_to_opus_48() {
+fn test_anthropic_fast_mode_supports_current_models() {
+    // GA: no beta header needed.
+    for model in ["claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5-2", "claude-opus-5-5-20261001"] {
+        assert_eq!(AnthropicProvider::fast_mode_support(model), Some(false), "{model}");
+    }
+    // Preview / deprecated: beta header required.
+    for model in ["claude-opus-5", "claude-opus-4-8"] {
+        assert_eq!(AnthropicProvider::fast_mode_support(model), Some(true), "{model}");
+    }
+    for model in ["claude-opus-4-6", "claude-sonnet-5", "claude-opus-5-1", "claude-haiku-4-5"] {
+        assert_eq!(AnthropicProvider::fast_mode_support(model), None, "{model}");
+    }
+
+    let provider = AnthropicProvider::new();
+    provider.set_model("claude-opus-5-5").unwrap();
+    provider.set_service_tier("priority").unwrap();
+    assert_eq!(provider.service_tier().as_deref(), Some("priority"));
+    assert_eq!(provider.fast_speed_for_model("claude-opus-5-5").as_deref(), Some("fast"));
+    provider.set_service_tier("off").unwrap();
+    assert_eq!(provider.fast_speed_for_model("claude-opus-5-5"), None);
+}
+
+#[test]
+fn test_anthropic_fast_mode_is_limited_to_supported_models() {
     let provider = AnthropicProvider::new();
     provider.set_model("claude-opus-4-6").unwrap();
 

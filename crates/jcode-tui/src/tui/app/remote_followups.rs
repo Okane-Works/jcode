@@ -2,6 +2,78 @@
 
 use super::*;
 
+/// Apply launch session settings once the remote session has attached:
+/// `--model` first (the shared daemon ignores it at attach), then `--effort`
+/// and `--fast` once the server confirms the model, so they bind to the new
+/// provider instead of the daemon default. While the switch is in flight,
+/// prompts are held by the existing model-switch gate in
+/// `submit_prepared_remote_input`, and `process_remote_followups` releases
+/// them after this has sent effort and tier.
+pub(in super::super) async fn apply_startup_session_settings(
+    app: &mut App,
+    remote: &mut RemoteConnection,
+) {
+    if !remote.has_loaded_history() {
+        return;
+    }
+    apply_seat_identity_env(app, remote).await;
+    if let Some(model) = app.startup_model.take() {
+        match remote.set_model(&model).await {
+            Ok(_) => {
+                app.remote_model_switch_in_flight = true;
+                return;
+            }
+            Err(error) => {
+                crate::logging::warn(&format!("Launch --model {model} failed: {error}"));
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Could not switch to the requested model {model}: {error}"
+                )));
+            }
+        }
+    }
+    if app.remote_model_switch_in_flight {
+        return;
+    }
+    if let Some(effort) = app.startup_reasoning_effort.take() {
+        match remote.set_reasoning_effort(&effort).await {
+            Ok(()) => app.remote_reasoning_effort = Some(effort),
+            Err(error) => {
+                crate::logging::warn(&format!("Launch flag --effort {effort} failed: {error}"))
+            }
+        }
+    }
+    if let Some(tier) = app.startup_service_tier.take()
+        && let Err(error) = remote.set_service_tier(&tier).await
+    {
+        crate::logging::warn(&format!("Launch flag --fast ({tier}) failed: {error}"));
+    }
+}
+
+/// Give the attached session's tool subprocesses this seat's public OpenRig
+/// identity, so `rig whoami` and `rig send` from its shell resolve to this
+/// seat. Sessions share one daemon, whose own environment carries no seat
+/// identity, so the per-session overlay is the only place it can live. It is
+/// re-sent whenever the attached session changes or after a reconnect, since
+/// a restarted daemon forgets overlays.
+async fn apply_seat_identity_env(app: &mut App, remote: &mut RemoteConnection) {
+    let identity = crate::openrig::seat_identity();
+    if identity.is_empty() {
+        return;
+    }
+    let Some(session_id) = app.remote_session_id.clone() else {
+        return;
+    };
+    if app.seat_env_applied_session.as_deref() == Some(session_id.as_str()) {
+        return;
+    }
+    match remote.set_session_env(identity.clone()).await {
+        Ok(()) => app.seat_env_applied_session = Some(session_id),
+        Err(error) => {
+            crate::logging::warn(&format!("Could not apply OpenRig seat identity: {error}"))
+        }
+    }
+}
+
 pub(in super::super) async fn process_remote_followups(
     app: &mut App,
     remote: &mut RemoteConnection,
@@ -50,6 +122,10 @@ pub(in super::super) async fn process_remote_followups(
         note_startup_submit_deferred(app, "remote history not loaded yet");
         return;
     }
+
+    // Launch session settings go out before any startup or held prompt, so
+    // the first turn runs on the requested model, effort and tier.
+    apply_startup_session_settings(app, remote).await;
 
     // Esc redirected to a pending prompt: the server sends Done before
     // Interrupted. Sending now would let the late Interrupted end the new turn.

@@ -1414,6 +1414,7 @@ fn handle_server_event_inner(
             app.cloud_environment_session_changed(&session_id);
             app.remote_session_id = Some(session_id.clone());
             crate::set_current_session(&session_id);
+            crate::openrig::report_session(&session_id);
             app.note_client_focus(true);
             app.update_terminal_title();
             false

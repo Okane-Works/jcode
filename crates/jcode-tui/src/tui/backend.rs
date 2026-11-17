@@ -796,6 +796,9 @@ impl RemoteConnection {
         // Reset per-call watermark before sending the next user request.
         self.reset_call_output_tokens_seen();
 
+        // OpenRig seat activity: one submitted message is one prompt.
+        crate::openrig_activity::prompt_submitted();
+
         let id = self.next_request_id;
         let request = Request::Message {
             id,
@@ -1168,6 +1171,20 @@ impl RemoteConnection {
         let request = Request::SetServiceTier {
             id: self.next_request_id,
             service_tier: service_tier.to_string(),
+        };
+        self.next_request_id += 1;
+        self.send_request(request).await
+    }
+
+    /// Replace the attached session's tool-environment overlay (variables
+    /// added to bash and other tool subprocesses for this session only).
+    pub async fn set_session_env(
+        &mut self,
+        env: std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let request = Request::SetSessionEnv {
+            id: self.next_request_id,
+            env,
         };
         self.next_request_id += 1;
         self.send_request(request).await

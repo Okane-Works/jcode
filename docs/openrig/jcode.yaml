@@ -1,6 +1,6 @@
 format: 1
 name: jcode
-command: jcode --no-update
+command: jcode --no-update --effort medium --fast off
 maintainer: jcode (https://github.com/1jehuang/jcode)
 limits:
   - "Resources and startup files are not projected; jcode reads AGENTS.md and its own skills from the working directory."

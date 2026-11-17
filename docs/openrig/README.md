@@ -15,7 +15,9 @@ rig community-harness list
 ```
 
 Then use `runtime: jcode` for a member in a rig spec, or
-`rig create <name> --runtime jcode`.
+`rig create <name> --runtime jcode`. The base preset pins medium reasoning
+effort with Fast off, so seats do not inherit the user's global jcode
+defaults.
 
 `jcode-lead.yaml` is a role variant of the same harness: medium reasoning
 effort with Fast (provider priority tier) enabled, for lead seats. Use

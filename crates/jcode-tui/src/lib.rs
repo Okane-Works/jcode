@@ -23,6 +23,7 @@
 pub use jcode_app_core::*;
 
 // Presentation layer (kept in this crate).
+pub mod openrig;
 pub mod swarm_compose;
 pub mod tui;
 pub mod video_export;

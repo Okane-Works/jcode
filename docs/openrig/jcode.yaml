@@ -1,0 +1,12 @@
+format: 1
+name: jcode
+command: jcode --no-update
+maintainer: jcode (https://github.com/1jehuang/jcode)
+limits:
+  - "Resources and startup files are not projected; jcode reads AGENTS.md and its own skills from the working directory."
+  - "Fork is unsupported; resume reopens the same jcode session."
+  - "All seats share one jcode daemon, so a daemon restart briefly disconnects every seat (sessions reattach)."
+launch_result: true
+resume: true
+passes_model: true
+first_input: true

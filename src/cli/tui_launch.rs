@@ -214,6 +214,9 @@ pub async fn run_tui_client(
     {
         apply_startup_hints(&mut app, hints);
     }
+    if let Some(first_input) = crate::openrig::read_first_input(crate::openrig::capture()) {
+        app.queue_startup_message(first_input);
+    }
 
     startup_profile::mark("pre_run_remote");
     startup_profile::report_to_log();

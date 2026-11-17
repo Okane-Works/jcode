@@ -50,6 +50,9 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
     if args.resume.as_deref() == Some("") {
         return tui_launch::list_sessions();
     }
+    if args.command.is_none() {
+        apply_openrig_launch(&mut args);
+    }
     resolve_resume_arg(&mut args)?;
 
     // One-time config migration: users whose config.toml still carries the old
@@ -664,6 +667,32 @@ fn auth_doctor_provider_arg<'a>(
             Some(global_provider.as_arg_value())
         }
     })
+}
+
+/// Map an OpenRig community-harness launch onto ordinary CLI arguments.
+/// Explicit flags win over the protocol variables. A resume of a conversation
+/// that no longer exists is reported as missing and starts nothing, as the
+/// protocol requires.
+fn apply_openrig_launch(args: &mut Args) {
+    let launch = crate::openrig::capture();
+    if !launch.is_openrig_launch() {
+        return;
+    }
+    if args.model.is_none() {
+        args.model = launch.model.clone();
+    }
+    if args.resume.is_none()
+        && let Some(resume_ref) = launch.resume_ref.as_deref()
+    {
+        match resolve_resume_id(resume_ref) {
+            Ok(full_id) => args.resume = Some(full_id),
+            Err(err) => {
+                crate::openrig::report_missing();
+                eprintln!("Error: OpenRig asked to resume {resume_ref}: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
 }
 
 fn resolve_resume_arg(args: &mut Args) -> Result<()> {

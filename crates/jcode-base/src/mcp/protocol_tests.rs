@@ -720,6 +720,57 @@ fn claude_json_http_entry_does_not_displace_jcode_stdio_server() {
 }
 
 #[test]
+fn jcode_global_config_wins_over_claude_global_for_same_server_name() {
+    // The same stdio server name in ~/.jcode/mcp.json and in both Claude Code
+    // global files must resolve to the jcode entry, including its env. Claude
+    // entries used to overwrite it. Project-local config stays highest.
+    let _guard = crate::storage::lock_test_env();
+    let previous_home = std::env::var_os("JCODE_HOME");
+    let home = tempfile::tempdir().expect("home tempdir");
+    let project = tempfile::tempdir().expect("project tempdir");
+    crate::env::set_var("JCODE_HOME", home.path());
+
+    std::fs::write(
+        home.path().join("mcp.json"),
+        r#"{"mcpServers":{"memory":{"command":"jcode-bin","env":{"HARNESS":"jcode"}},"local-wins":{"command":"jcode-bin"}}}"#,
+    )
+    .expect("write jcode mcp config");
+    let external = home.path().join("external");
+    std::fs::create_dir_all(external.join(".claude")).expect("create external dirs");
+    std::fs::write(
+        external.join(".claude.json"),
+        r#"{"mcpServers":{"memory":{"command":"claude-bin","env":{"HARNESS":"claude-code"}},"claude-only":{"command":"claude-bin"},"local-wins":{"command":"claude-bin"}}}"#,
+    )
+    .expect("write claude config");
+    std::fs::write(
+        external.join(".claude/mcp.json"),
+        r#"{"mcpServers":{"memory":{"command":"claude-legacy-bin"}}}"#,
+    )
+    .expect("write legacy claude config");
+    std::fs::write(
+        project.path().join(".mcp.json"),
+        r#"{"mcpServers":{"local-wins":{"command":"project-bin"}}}"#,
+    )
+    .expect("write project config");
+
+    let result = std::panic::catch_unwind(|| {
+        let merged = McpConfig::load_for_dir(Some(project.path()));
+        let memory = &merged.servers["memory"];
+        assert_eq!(memory.command, "jcode-bin");
+        assert_eq!(memory.env.get("HARNESS").map(String::as_str), Some("jcode"));
+        assert_eq!(merged.servers["claude-only"].command, "claude-bin");
+        assert_eq!(merged.servers["local-wins"].command, "project-bin");
+    });
+
+    if let Some(previous_home) = previous_home {
+        crate::env::set_var("JCODE_HOME", previous_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+    result.expect("jcode over Claude precedence assertions");
+}
+
+#[test]
 fn claude_is_live_while_codex_is_a_one_time_snapshot() {
     let _guard = crate::storage::lock_test_env();
     let previous_home = std::env::var_os("JCODE_HOME");

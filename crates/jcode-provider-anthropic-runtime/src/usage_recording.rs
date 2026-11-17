@@ -241,6 +241,7 @@ mod tests {
                     output_config: None,
                     temperature: None,
                     service_tier: None,
+                    speed: None,
                     stream: true,
                 };
                 let original_request = serde_json::to_value(&request).unwrap();

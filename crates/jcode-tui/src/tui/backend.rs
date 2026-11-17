@@ -1161,6 +1161,20 @@ impl RemoteConnection {
         self.send_request(request).await
     }
 
+    /// Replace the attached session's tool-environment overlay (variables
+    /// added to bash and other tool subprocesses for this session only).
+    pub async fn set_session_env(
+        &mut self,
+        env: std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let request = Request::SetSessionEnv {
+            id: self.next_request_id,
+            env,
+        };
+        self.next_request_id += 1;
+        self.send_request(request).await
+    }
+
     /// Set connection transport on the server (for OpenAI models)
     pub async fn set_transport(&mut self, transport: &str) -> Result<()> {
         let request = Request::SetTransport {

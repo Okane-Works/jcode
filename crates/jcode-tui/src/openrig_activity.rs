@@ -39,6 +39,16 @@ const WORKING_MIN_GAP: Duration = Duration::from_secs(2);
 /// A repeat of the same working evidence refreshes the 15-second hook
 /// window well before it lapses.
 const WORKING_REPEAT_GAP: Duration = Duration::from_secs(10);
+/// Idle heartbeat cadence and the liveness each idle report claims. OpenRig
+/// stops reading the seat idle after 2 x livenessSeconds without a beat, and
+/// treats any hook older than five minutes as stale, so beat well inside both.
+const IDLE_BEAT_EVERY: Duration = Duration::from_secs(120);
+const IDLE_LIVENESS_SECS: u64 = 180;
+/// Working beat while a turn is outstanding but quiet (a long tool or model
+/// call), well inside its 30-second liveness.
+const WORKING_BEAT_EVERY: Duration = Duration::from_secs(10);
+const WORKING_LIVENESS_SECS: u64 = 30;
+const BEAT_POLL: Duration = Duration::from_secs(2);
 
 static CAPTURED: OnceLock<ActivityEnv> = OnceLock::new();
 static SENDER: OnceLock<Option<SyncSender<Event>>> = OnceLock::new();
@@ -178,6 +188,9 @@ enum Event {
     Stopped { subtype: &'static str },
     /// The client process is exiting (`Stop`/`<runtime>_exited`).
     Exited,
+    /// Heartbeat with nothing new to report: `Stop`/`idle_heartbeat` while
+    /// idle, `active`/`liveness` while a turn is outstanding.
+    Beat { turn_open: bool },
 }
 
 fn sender() -> Option<&'static SyncSender<Event>> {
@@ -202,6 +215,12 @@ fn enqueue(event: Event) {
     match tx.try_send(event) {
         Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
     }
+}
+
+/// Start reporting at launch, so an idle seat reads idle before its first
+/// prompt. No-op unless this process is a reporting OpenRig seat.
+pub fn start() {
+    let _ = sender();
 }
 
 /// The seat accepted a submitted message as its next prompt.
@@ -296,7 +315,24 @@ impl ReporterState {
 
 fn reporter_loop(env: &'static ActivityEnv, rx: Receiver<Event>) {
     let mut state = ReporterState::new();
-    while let Ok(event) = rx.recv() {
+    // What was last posted, for heartbeats: idle beats follow a turn's Stop,
+    // working beats keep a long quiet turn reading working. A seat starts at
+    // its prompt, so the first idle beat is due right away.
+    let mut last_post: Option<(Instant, bool)> =
+        Some((Instant::now().checked_sub(IDLE_BEAT_EVERY).unwrap_or_else(Instant::now), false));
+    loop {
+        let event = match rx.recv_timeout(BEAT_POLL) {
+            Ok(event) => event,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let Some((at, turn_open)) = last_post else { continue };
+                let due = if turn_open { WORKING_BEAT_EVERY } else { IDLE_BEAT_EVERY };
+                if at.elapsed() < due {
+                    continue;
+                }
+                Event::Beat { turn_open }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         let exiting = matches!(event, Event::Exited);
         if state.admit(&event, Instant::now()) {
             if let Event::Prompt { turn } = &event {
@@ -309,6 +345,13 @@ fn reporter_loop(env: &'static ActivityEnv, rx: Receiver<Event>) {
                 Ok(status) => note_failure(&mut state, &format!("ingest refused with status {status}")),
                 Err(err) => note_failure(&mut state, &err),
             }
+            last_post = match &event {
+                Event::Exited => None,
+                Event::Stopped { .. } | Event::Beat { turn_open: false } => {
+                    Some((Instant::now(), false))
+                }
+                _ => Some((Instant::now(), true)),
+            };
         }
         if exiting {
             break;
@@ -333,6 +376,15 @@ fn hook_body(env: &ActivityEnv, event: &Event, sequence: u64, turn: Option<u64>)
         Event::Working { hook_event, subtype } => (*hook_event, subtype.clone(), turn),
         Event::Stopped { subtype } => ("Stop", (*subtype).to_string(), turn),
         Event::Exited => ("Stop", format!("{}_exited", env.runtime), None),
+        Event::Beat { turn_open: true } => ("active", "liveness".to_string(), turn),
+        Event::Beat { turn_open: false } => ("Stop", "idle_heartbeat".to_string(), turn),
+    };
+    // Idle reports hold only while beats keep coming (2 x livenessSeconds),
+    // so a seat whose client died stops reading idle on its own.
+    let liveness = match event {
+        Event::Stopped { .. } | Event::Beat { turn_open: false } => Some(IDLE_LIVENESS_SECS),
+        Event::Beat { turn_open: true } => Some(WORKING_LIVENESS_SECS),
+        _ => None,
     };
     let mut body = serde_json::json!({
         "runtime": env.runtime,
@@ -352,6 +404,9 @@ fn hook_body(env: &ActivityEnv, event: &Event, sequence: u64, turn: Option<u64>)
     }
     if let Some(turn) = turn_id {
         body["turnId"] = turn.to_string().into();
+    }
+    if let Some(seconds) = liveness {
+        body["livenessSeconds"] = seconds.into();
     }
     body
 }

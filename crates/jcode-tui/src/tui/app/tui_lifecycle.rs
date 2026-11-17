@@ -685,8 +685,10 @@ impl App {
             pending_automatic_failover_request_id: None,
             pending_automatic_failover_started: None,
             pending_reasoning_effort: None,
+            startup_model: None,
             startup_reasoning_effort: None,
             startup_service_tier: None,
+            seat_env_applied_session: None,
             remote_model_switch_in_flight: false,
             pending_prompt_after_model_switch: None,
             pending_prompt_before_history: None,
@@ -1206,8 +1208,10 @@ impl App {
             pending_automatic_failover_request_id: None,
             pending_automatic_failover_started: None,
             pending_reasoning_effort: None,
+            startup_model: None,
             startup_reasoning_effort: None,
             startup_service_tier: None,
+            seat_env_applied_session: None,
             remote_model_switch_in_flight: false,
             pending_prompt_after_model_switch: None,
             pending_prompt_before_history: None,
@@ -1373,15 +1377,13 @@ impl App {
         self.pending_turn = true;
     }
 
-    /// Stage launch-flag session settings (`--effort`, `--fast`), applied once
-    /// after the remote session attaches, exactly as the slash commands would.
-    pub fn set_startup_session_settings(
-        &mut self,
-        effort: Option<String>,
-        service_tier: Option<String>,
-    ) {
-        self.startup_reasoning_effort = effort;
-        self.startup_service_tier = service_tier;
+    /// Stage launch session settings (`--model` on an attached daemon,
+    /// `--effort`, `--fast`), applied once after the remote session attaches,
+    /// exactly as the slash commands would.
+    pub fn set_startup_session_settings(&mut self, settings: super::StartupSessionSettings) {
+        self.startup_model = settings.model;
+        self.startup_reasoning_effort = settings.reasoning_effort;
+        self.startup_service_tier = settings.service_tier;
     }
 
     /// Show the background-rendered local transcript once it is ready, unless

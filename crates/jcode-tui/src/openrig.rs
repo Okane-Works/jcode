@@ -147,6 +147,64 @@ pub fn read_first_input(env: &LaunchEnv) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
+/// Variables that name one particular seat. The shared daemon must never carry
+/// them: whichever seat happened to spawn it would otherwise lend its identity
+/// to every other session's shell tools (`rig whoami`, `rig send` senders).
+pub const SEAT_SCOPED_ENV: &[&str] = &[
+    "OPENRIG_SESSION_NAME",
+    "OPENRIG_NODE_ID",
+    "OPENRIG_OCCUPANT_GENERATION",
+    "OPENRIG_RUNTIME",
+    "OPENRIG_TRANSCRIPTS_ENABLED",
+    "OPENRIG_TRANSCRIPTS_PATH",
+    "OPENRIG_TRANSCRIPTS_LINES",
+    "OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS",
+    "RIGGED_SESSION_NAME",
+    "RIGGED_NODE_ID",
+];
+
+/// Public seat identity forwarded into this session's tool environment, so a
+/// shell tool running on the shared daemon acts as this seat. Only the public
+/// address and node id (plus where to reach OpenRig) are forwarded: never the
+/// activity-hook token, run grant, or occupant generation.
+const SEAT_IDENTITY_ENV: &[&str] = &[
+    "OPENRIG_SESSION_NAME",
+    "OPENRIG_NODE_ID",
+    "OPENRIG_URL",
+    "OPENRIG_HOST",
+    "OPENRIG_PORT",
+    "OPENRIG_HOME",
+];
+
+static SEAT_IDENTITY: OnceLock<std::collections::HashMap<String, String>> = OnceLock::new();
+
+/// Whether this client runs as an OpenRig seat. A seat keeps its idle screen
+/// byte-silent: OpenRig reads any pane output as work, which would override
+/// the seat's own idle report. Decorative periodic output (rotating tips,
+/// terminal background polling) is suppressed.
+pub fn is_seat() -> bool {
+    !seat_identity().is_empty()
+}
+
+/// This client's seat identity overlay, read once at startup. Empty unless
+/// the process was launched as an OpenRig seat (session name present).
+pub fn seat_identity() -> &'static std::collections::HashMap<String, String> {
+    SEAT_IDENTITY.get_or_init(|| seat_identity_from_lookup(|key| std::env::var(key).ok()))
+}
+
+pub fn seat_identity_from_lookup(
+    get: impl Fn(&str) -> Option<String>,
+) -> std::collections::HashMap<String, String> {
+    let get = |key: &str| get(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    if get("OPENRIG_SESSION_NAME").is_none() {
+        return std::collections::HashMap::new();
+    }
+    SEAT_IDENTITY_ENV
+        .iter()
+        .filter_map(|key| Some((key.to_string(), get(key)?)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

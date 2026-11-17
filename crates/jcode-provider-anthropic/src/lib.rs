@@ -548,6 +548,9 @@ pub struct ApiRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    /// Fast mode: `"fast"` opts into faster output on supported models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
     pub stream: bool,
 }
 

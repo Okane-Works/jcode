@@ -206,6 +206,22 @@ pub(super) async fn run_stream_with_retries(
                     continue;
                 }
 
+                // Fast mode refused (no usage credits, or the fast-mode rate
+                // limit is exhausted): fall back to standard speed for this
+                // request, as Anthropic recommends, instead of failing the turn.
+                if request.speed.is_some()
+                    && !saw_output
+                    && error_str.to_ascii_lowercase().contains("fast mode")
+                {
+                    jcode_base::logging::warn(&format!(
+                        "Anthropic refused fast mode for '{}' ({}); retrying at standard speed",
+                        model_name, e
+                    ));
+                    request.speed = None;
+                    last_error = Some(e);
+                    continue;
+                }
+
                 // Reasoning request rejected (e.g. a model listed with effort or
                 // thinking capabilities that the live API does not actually
                 // accept: "adaptive thinking is not supported on this model" or

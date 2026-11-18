@@ -79,3 +79,21 @@ called by `workday upgrade`. Conflict reports go to `~/.jcode/sync/conflict-repo
 - Files: `docs/HOOKS.md`, `docs/SESSION_FORMAT.md`
 - Intent: documents patch 4 and the session file format. Doc conflicts: keep
   upstream text and re-add our sections.
+
+### 6. Headroom proxy routing for seat (OAuth) traffic
+- Commits: `feat(openai): allow JCODE_CHATGPT_API_BASE ...`,
+  `feat(anthropic): allow JCODE_CLAUDE_OAUTH_API_BASE ...`,
+  `feat(config): provider.chatgpt_api_base / claude_oauth_api_base`.
+- Files: `crates/jcode-base/src/provider/openai.rs`, `crates/jcode-base/src/sidecar.rs`,
+  `crates/jcode-provider-openai-runtime/src/lib.rs` (`responses_url`),
+  `crates/jcode-provider-anthropic-runtime/src/lib.rs` (`oauth_api_url`),
+  `crates/jcode-config-types/src/lib.rs` (`ProviderConfig`),
+  `crates/jcode-base/src/config.rs` + `config/env_overrides.rs`.
+- Intent: upstream hardcodes chatgpt.com and api.anthropic.com for Codex and
+  Claude subscription seats. These opt-in settings let seat traffic go through
+  the local Headroom proxy daemon. Set in `~/.jcode/config.toml` `[provider]`:
+  `chatgpt_api_base = "http://127.0.0.1:8787/v1"`,
+  `claude_oauth_api_base = "http://127.0.0.1:8787"`. Config, not env, so the
+  menubar-launched server picks it up. Unset means upstream behavior.
+- Tests: `cargo test -p jcode-base chatgpt_base`,
+  `cargo test -p jcode-provider-anthropic-runtime oauth_api_url`.

@@ -1148,6 +1148,12 @@ pub struct ProviderConfig {
     pub openai_transport: Option<String>,
     /// OpenAI service tier override (priority|ultrafast|flex|off). Ultrafast is opt-in.
     pub openai_service_tier: Option<String>,
+    /// Base URL for ChatGPT/Codex OAuth (seat) traffic, e.g. a local Headroom
+    /// proxy `http://127.0.0.1:8787/v1`. Env: `JCODE_CHATGPT_API_BASE`.
+    pub chatgpt_api_base: Option<String>,
+    /// Base URL for Claude OAuth (seat) traffic, e.g. a local Headroom proxy
+    /// `http://127.0.0.1:8787`. Env: `JCODE_CLAUDE_OAUTH_API_BASE`.
+    pub claude_oauth_api_base: Option<String>,
     /// OpenAI native compaction mode: "auto", "explicit", or "off".
     pub openai_native_compaction_mode: String,
     /// Token threshold at which OpenAI auto native compaction should trigger.
@@ -1222,6 +1228,8 @@ impl Default for ProviderConfig {
             anthropic_cache_ttl_1h: true,
             openai_transport: None,
             openai_service_tier: Some("priority".to_string()),
+            chatgpt_api_base: None,
+            claude_oauth_api_base: None,
             openai_native_compaction_mode: "auto".to_string(),
             openai_native_compaction_threshold_tokens: 200_000,
             preserve_reasoning_context: true,

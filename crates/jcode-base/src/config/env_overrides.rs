@@ -882,6 +882,18 @@ impl Config {
                 self.provider.openai_transport = Some(trimmed);
             }
         }
+        if let Ok(v) = std::env::var("JCODE_CHATGPT_API_BASE") {
+            let trimmed = v.trim().to_string();
+            if !trimmed.is_empty() {
+                self.provider.chatgpt_api_base = Some(trimmed);
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_CLAUDE_OAUTH_API_BASE") {
+            let trimmed = v.trim().to_string();
+            if !trimmed.is_empty() {
+                self.provider.claude_oauth_api_base = Some(trimmed);
+            }
+        }
         if let Ok(v) = std::env::var("JCODE_OPENAI_SERVICE_TIER") {
             let trimmed = v.trim().to_string();
             if !trimmed.is_empty() {

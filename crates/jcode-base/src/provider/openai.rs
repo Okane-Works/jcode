@@ -364,13 +364,13 @@ pub const CHATGPT_API_BASE_DEFAULT: &str = "https://chatgpt.com/backend-api/code
 /// Resolve the ChatGPT/Codex OAuth ("seat") backend base URL.
 ///
 /// Defaults to `https://chatgpt.com/backend-api/codex`. Set
-/// `JCODE_CHATGPT_API_BASE` (an absolute `http(s)://` URL) to route Codex seat
+/// `[provider] chatgpt_api_base` in config.toml or `JCODE_CHATGPT_API_BASE` (an absolute `http(s)://` URL) to route Codex seat
 /// traffic through a local proxy such as Headroom
 /// (`http://127.0.0.1:8787/v1`), which forwards ChatGPT-authenticated requests
 /// to the Codex backend. `OPENAI_BASE_URL` is intentionally not consulted here,
 /// since it targets API-key endpoints.
 pub fn resolve_chatgpt_api_base() -> String {
-    chatgpt_api_base_from(std::env::var("JCODE_CHATGPT_API_BASE").ok().as_deref())
+    chatgpt_api_base_from(crate::config::config().provider.chatgpt_api_base.as_deref())
 }
 
 fn chatgpt_api_base_from(raw: Option<&str>) -> String {

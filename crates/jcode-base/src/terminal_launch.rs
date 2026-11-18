@@ -2,10 +2,27 @@ use anyhow::{Result, bail};
 pub use jcode_terminal_launch::{
     RUNTIME_ENV_VARS, SpawnAttempt, TerminalCommand, apply_client_terminal_env, apply_runtime_env,
     build_hook_spawn_command, detected_resume_terminal, expand_home, parse_hook_command,
-    resume_terminal_candidates, sh_escape, shell_command, snapshot_client_terminal_env,
-    spawn_command_in_new_terminal_with,
+    resume_terminal_candidates, sh_escape, shell_command, spawn_command_in_new_terminal_with,
 };
 use std::path::Path;
+
+/// Snapshot the env a client sends to the server on Subscribe: terminal
+/// identity plus per-session compaction overrides (`JCODE_COMPACTION_*`,
+/// `JCODE_MAX_CONTEXT_TOKENS`). The shared daemon applies the compaction keys
+/// to this client's session only, and hook spawning ignores them.
+pub fn snapshot_client_terminal_env() -> Vec<(String, String)> {
+    let mut env = jcode_terminal_launch::snapshot_client_terminal_env();
+    env.extend(
+        crate::config::COMPACTION_ENV_VARS
+            .iter()
+            .filter_map(|&key| {
+                std::env::var(key)
+                    .ok()
+                    .map(|value| (key.to_string(), value))
+            }),
+    );
+    env
+}
 
 /// The configured external spawn hook, if any.
 ///

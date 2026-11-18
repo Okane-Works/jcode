@@ -118,6 +118,26 @@ explicitly. The ceiling is a compaction budget, not an exact outbound token limi
 
 Rust SDK: `client.set_context_cap(session_id, Some(600_000))`.
 TypeScript SDK: `await client.setContextCap(sessionId, 600_000)`.
+
+### Per-seat compaction env overrides
+
+These environment variables override `[compaction]` settings:
+
+| Variable | Overrides |
+| --- | --- |
+| `JCODE_COMPACTION_MODE` | `mode` (`reactive`, `proactive`, `semantic`) |
+| `JCODE_COMPACTION_REACTIVE_THRESHOLD` | `reactive_threshold` (fraction in `(0, 1]`) |
+| `JCODE_COMPACTION_REACTIVE_THRESHOLD_TOKENS` | `reactive_threshold_tokens` (`0` disables) |
+| `JCODE_COMPACTION_PROACTIVE_FLOOR_TOKENS` | `proactive_floor_tokens` (`0` disables) |
+| `JCODE_MAX_CONTEXT_TOKENS` | `max_context_tokens` (`0` = model window) |
+
+Set on the daemon, they change its defaults. Set on a client (for example an
+OpenRig seat launching `jcode`), the client sends them in its Subscribe env
+snapshot and the shared daemon applies them to that client's session only.
+Other sessions keep the daemon config. Invalid values are ignored. A session
+ceiling from `set_context_cap` still takes precedence over
+`JCODE_MAX_CONTEXT_TOKENS`. The overrides are not persisted, so a client must
+set them again when it resumes the session.
 Both return the effective budget. Live `token_usage` events also carry an optional
 `effective_budget` from the daemon, allowing clients to render a context meter
 without treating the model's full window as the active compaction budget.

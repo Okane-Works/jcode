@@ -1084,6 +1084,60 @@ fn proactive_floor_accepts_tokens_or_percentage() {
 }
 
 #[test]
+fn client_env_overrides_apply_per_session_and_survive_reset() {
+    let _lock = crate::storage::lock_test_env();
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            if let Some(home) = &self.0 {
+                crate::env::set_var("JCODE_HOME", home);
+            } else {
+                crate::env::remove_var("JCODE_HOME");
+            }
+            crate::config::Config::invalidate_cache();
+        }
+    }
+    let home = tempfile::tempdir().unwrap();
+    let _restore = RestoreHome(std::env::var_os("JCODE_HOME"));
+    crate::env::set_var("JCODE_HOME", home.path());
+    crate::config::Config::default().save().unwrap();
+
+    let mut seat = CompactionManager::new().with_budget(1_000_000);
+    let other = CompactionManager::new().with_budget(1_000_000);
+    seat.set_env_overrides(vec![
+        ("TERM".into(), "xterm".into()),
+        ("JCODE_COMPACTION_MODE".into(), "proactive".into()),
+        ("JCODE_MAX_CONTEXT_TOKENS".into(), "200000".into()),
+        (
+            "JCODE_COMPACTION_REACTIVE_THRESHOLD_TOKENS".into(),
+            "90000".into(),
+        ),
+    ]);
+    assert_eq!(seat.mode(), crate::config::CompactionMode::Proactive);
+    assert_eq!(seat.token_budget(), 200_000);
+    assert_eq!(seat.compaction_config.reactive_threshold_tokens, 90_000);
+    // Another session on the same daemon keeps daemon defaults.
+    assert_eq!(other.mode(), crate::config::CompactionMode::Reactive);
+    assert_eq!(other.token_budget(), 1_000_000);
+
+    // Survives reset and the pre-request cap refresh.
+    seat.reset();
+    seat.set_budget(1_000_000);
+    seat.ensure_context_fits(&[], Arc::new(MockSummaryProvider));
+    assert_eq!(seat.mode(), crate::config::CompactionMode::Proactive);
+    assert_eq!(seat.token_budget(), 200_000);
+
+    // A session context cap still wins over the env ceiling.
+    seat.set_context_cap_override(Some(300_000));
+    assert_eq!(seat.token_budget(), 300_000);
+
+    seat.set_env_overrides(Vec::new());
+    seat.set_context_cap_override(None);
+    assert_eq!(seat.mode(), crate::config::CompactionMode::Reactive);
+    assert_eq!(seat.token_budget(), 1_000_000);
+}
+
+#[test]
 fn max_context_tokens_applies_at_construction_and_reloads_before_requests() {
     let _lock = crate::storage::lock_test_env();
     struct RestoreHome(Option<std::ffi::OsString>);

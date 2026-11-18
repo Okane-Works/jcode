@@ -900,6 +900,12 @@ impl Config {
                 self.provider.openai_service_tier = Some(trimmed);
             }
         }
+        let compaction_env: Vec<(&str, String)> = jcode_config_types::COMPACTION_ENV_VARS
+            .iter()
+            .filter_map(|key| std::env::var(key).ok().map(|v| (*key, v)))
+            .collect();
+        self.compaction
+            .apply_env_pairs(compaction_env.iter().map(|(k, v)| (*k, v.as_str())));
         if let Ok(v) = std::env::var("JCODE_OPENAI_NATIVE_COMPACTION_MODE") {
             let trimmed = v.trim().to_ascii_lowercase();
             if !trimmed.is_empty() {

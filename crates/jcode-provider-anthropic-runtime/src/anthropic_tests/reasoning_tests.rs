@@ -417,14 +417,32 @@ fn test_anthropic_opus_48_fast_mode_serializes_speed_fast() {
 #[test]
 fn test_anthropic_fast_mode_supports_current_models() {
     // GA: no beta header needed.
-    for model in ["claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5-2", "claude-opus-5-5-20261001"] {
-        assert_eq!(AnthropicProvider::fast_mode_support(model), Some(false), "{model}");
+    for model in [
+        "claude-opus-5-5",
+        "claude-fable-5-2",
+        "claude-mythos-5-2",
+        "claude-opus-5-5-20261001",
+    ] {
+        assert_eq!(
+            AnthropicProvider::fast_mode_support(model),
+            Some(false),
+            "{model}"
+        );
     }
     // Preview / deprecated: beta header required.
     for model in ["claude-opus-5", "claude-opus-4-8"] {
-        assert_eq!(AnthropicProvider::fast_mode_support(model), Some(true), "{model}");
+        assert_eq!(
+            AnthropicProvider::fast_mode_support(model),
+            Some(true),
+            "{model}"
+        );
     }
-    for model in ["claude-opus-4-6", "claude-sonnet-5", "claude-opus-5-1", "claude-haiku-4-5"] {
+    for model in [
+        "claude-opus-4-6",
+        "claude-sonnet-5",
+        "claude-opus-5-1",
+        "claude-haiku-4-5",
+    ] {
         assert_eq!(AnthropicProvider::fast_mode_support(model), None, "{model}");
     }
 
@@ -432,7 +450,10 @@ fn test_anthropic_fast_mode_supports_current_models() {
     provider.set_model("claude-opus-5-5").unwrap();
     provider.set_service_tier("priority").unwrap();
     assert_eq!(provider.service_tier().as_deref(), Some("priority"));
-    assert_eq!(provider.fast_speed_for_model("claude-opus-5-5").as_deref(), Some("fast"));
+    assert_eq!(
+        provider.fast_speed_for_model("claude-opus-5-5").as_deref(),
+        Some("fast")
+    );
     provider.set_service_tier("off").unwrap();
     assert_eq!(provider.fast_speed_for_model("claude-opus-5-5"), None);
 }

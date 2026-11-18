@@ -1136,17 +1136,33 @@ fn build_todo_output(
     plan_change: Option<TodoPlanChange>,
     goal_changes: Option<Vec<TodoGoalChange>>,
     continuations: impl IntoIterator<Item = String>,
+    delta: Option<TodoDelta>,
 ) -> Result<ToolOutput> {
     let remaining = todos
         .iter()
         .filter(|todo| todo.status != "completed")
         .count();
-    let mut text = serde_json::to_string_pretty(&names::public_todos(&todos)?)?;
-    if plan != TodoPlan::default() {
+    let mut text = if let Some(delta) = delta.as_ref() {
+        let mut text = todo_counts_summary(&todos);
+        if !delta.changed.is_empty() {
+            text.push_str("\n\nChanged:\n");
+            text.push_str(&serde_json::to_string_pretty(&names::public_todos(
+                &delta.changed,
+            )?)?);
+        }
+        if !delta.removed.is_empty() {
+            text.push_str("\n\nRemoved: ");
+            text.push_str(&delta.removed.join(", "));
+        }
+        text
+    } else {
+        serde_json::to_string_pretty(&names::public_todos(&todos)?)?
+    };
+    if delta.is_none() && plan != TodoPlan::default() {
         text.push_str("\n\nPlan:\n");
         text.push_str(&serde_json::to_string_pretty(&plan)?);
     }
-    if !goals.is_empty() {
+    if delta.is_none() && !goals.is_empty() {
         text.push_str("\n\nGoals:\n");
         text.push_str(&serde_json::to_string_pretty(&goals)?);
     }
@@ -1177,6 +1193,38 @@ fn build_todo_output(
 #[path = "todo_normalize.rs"]
 mod normalize;
 use normalize::normalize_todo_input;
+
+/// Items touched by a patch-mode write (update/add/remove).
+struct TodoDelta {
+    changed: Vec<TodoItem>,
+    removed: Vec<String>,
+}
+
+fn todo_delta(previous: &[TodoItem], todos: &[TodoItem]) -> TodoDelta {
+    let changed = todos
+        .iter()
+        .filter(|todo| previous.iter().find(|p| p.id == todo.id) != Some(*todo))
+        .cloned()
+        .collect();
+    let removed = previous
+        .iter()
+        .filter(|p| !todos.iter().any(|todo| todo.id == p.id))
+        .map(|p| p.content.clone())
+        .collect();
+    TodoDelta { changed, removed }
+}
+
+fn todo_counts_summary(todos: &[TodoItem]) -> String {
+    let count = |status: &str| todos.iter().filter(|t| t.status == status).count();
+    format!(
+        "{} todos: {} completed, {} in_progress, {} pending, {} cancelled",
+        todos.len(),
+        count("completed"),
+        count("in_progress"),
+        count("pending"),
+        count("cancelled"),
+    )
+}
 
 #[async_trait]
 impl Tool for TodoTool {
@@ -1531,6 +1579,8 @@ impl Tool for TodoTool {
                 // should render the fields that changed instead of repeating an
                 // otherwise identical todo plan.
                 let assessment_only = todos == previous;
+                let delta = (todo_write_mode(&write_mode_input) == "patch")
+                    .then(|| todo_delta(&previous, &todos));
                 let concise_goal_changes = (assessment_only && !stored_goals.is_empty())
                     .then(|| goal_changes(&stored_goals, &goals));
                 let concise_plan_change = assessment_only
@@ -1566,6 +1616,7 @@ impl Tool for TodoTool {
                     concise_plan_change,
                     concise_goal_changes,
                     nudges,
+                    delta,
                 )
             })()
         } else {
@@ -1575,7 +1626,7 @@ impl Tool for TodoTool {
                 let goals = load_goals(&ctx.session_id).unwrap_or_default();
                 let plan = load_plan(&ctx.session_id).unwrap_or_default();
                 record_todo_telemetry(&todos, &todos, &goals, &plan);
-                build_todo_output(todos, plan, goals, None, None, Vec::new())
+                build_todo_output(todos, plan, goals, None, None, Vec::new(), None)
             })()
         };
         result.map_err(|err| {

@@ -1059,6 +1059,7 @@ fn ownership_gate_output_preserves_the_saved_todo_card() {
         None,
         None,
         [crate::todo::TODO_OWNERSHIP_CONTINUATION_MESSAGE.to_string()],
+        None,
     )
     .expect("ownership gate should produce a structured todo result");
 

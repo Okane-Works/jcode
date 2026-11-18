@@ -188,6 +188,11 @@ pub struct CompactionManager {
     /// Config snapshot for mode-specific parameters
     compaction_config: crate::config::CompactionConfig,
 
+    /// Per-session `JCODE_COMPACTION_*` env overrides sent by the client.
+    /// A shared daemon serves many seats, so these layer over the daemon's
+    /// config for this session only and survive `reset()`.
+    env_overrides: Vec<(String, String)>,
+
     // ── Proactive mode state ───────────────────────────────────────────────
     /// Rolling window of observed token counts, one entry per turn snapshot.
     /// Used to compute EWMA growth rate for proactive compaction.
@@ -232,6 +237,7 @@ impl CompactionManager {
             last_compaction: None,
             mode,
             compaction_config: cfg,
+            env_overrides: Vec::new(),
             token_history: VecDeque::with_capacity(TOKEN_HISTORY_WINDOW + 1),
             turns_since_last_compact: 0,
             embedding_history: VecDeque::with_capacity(EMBEDDING_HISTORY_WINDOW + 1),
@@ -242,7 +248,39 @@ impl CompactionManager {
 
     /// Reset all compaction state
     pub fn reset(&mut self) {
+        let env_overrides = std::mem::take(&mut self.env_overrides);
         *self = Self::new();
+        self.set_env_overrides(env_overrides);
+    }
+
+    /// Layer client-supplied compaction env vars over the daemon config for
+    /// this session. Unrecognized keys are ignored, so a full client env
+    /// snapshot can be passed. An empty list restores daemon defaults.
+    pub fn set_env_overrides(&mut self, env: Vec<(String, String)>) {
+        let env: Vec<(String, String)> = env
+            .into_iter()
+            .filter(|(k, _)| crate::config::COMPACTION_ENV_VARS.contains(&k.as_str()))
+            .collect();
+        let mut cfg = crate::config::config().compaction.clone();
+        cfg.apply_env_pairs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        self.mode = cfg.mode.clone();
+        self.compaction_config = cfg;
+        self.env_overrides = env;
+        self.refresh_context_cap();
+    }
+
+    fn override_max_context_tokens(&self) -> Option<usize> {
+        let mut probe = crate::config::CompactionConfig {
+            max_context_tokens: usize::MAX,
+            ..Default::default()
+        };
+        probe.apply_env_pairs(
+            self.env_overrides
+                .iter()
+                .filter(|(k, _)| k == "JCODE_MAX_CONTEXT_TOKENS")
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        );
+        (probe.max_context_tokens != usize::MAX).then_some(probe.max_context_tokens)
     }
 
     pub fn with_budget(mut self, budget: usize) -> Self {
@@ -268,8 +306,9 @@ impl CompactionManager {
     }
 
     fn refresh_context_cap(&mut self) {
-        self.compaction_config.max_context_tokens =
-            crate::config::config().compaction.max_context_tokens;
+        self.compaction_config.max_context_tokens = self
+            .override_max_context_tokens()
+            .unwrap_or_else(|| crate::config::config().compaction.max_context_tokens);
         let cap = self
             .context_cap_override
             .unwrap_or(self.compaction_config.max_context_tokens);

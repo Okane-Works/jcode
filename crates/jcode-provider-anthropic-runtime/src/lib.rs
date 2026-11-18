@@ -67,11 +67,17 @@ const API_URL_OAUTH: &str = "https://api.anthropic.com/v1/messages?beta=true";
 
 /// OAuth (Claude subscription seat) Messages URL. Defaults to
 /// api.anthropic.com. `ANTHROPIC_BASE_URL` is deliberately ignored here; set
-/// the explicit opt-in `JCODE_CLAUDE_OAUTH_API_BASE` (e.g. a local Headroom
+/// the explicit opt-in `[provider] claude_oauth_api_base` (or env
+/// `JCODE_CLAUDE_OAUTH_API_BASE`) (e.g. a local Headroom
 /// proxy, `http://127.0.0.1:8787`) to route seat traffic through a
 /// transparent passthrough proxy.
 fn oauth_api_url() -> String {
-    oauth_api_url_from(std::env::var("JCODE_CLAUDE_OAUTH_API_BASE").ok().as_deref())
+    oauth_api_url_from(
+        jcode_base::config::config()
+            .provider
+            .claude_oauth_api_base
+            .as_deref(),
+    )
 }
 
 fn oauth_api_url_from(raw: Option<&str>) -> String {

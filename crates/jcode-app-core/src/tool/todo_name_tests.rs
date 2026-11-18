@@ -302,12 +302,20 @@ async fn named_tool_execution_persists_ids_but_returns_public_names() {
     let original = load_todos("named-tool-execution").unwrap();
     let patched = tool.execute(json!({"phases": null, "update": [{"name": "Implement", "status": "in_progress", "description": "Updated brief"}]}), context()).await.unwrap();
     assert!(
-        patched.output.starts_with("1 todos: 0 completed, 1 in_progress, 0 pending, 0 cancelled"),
+        patched
+            .output
+            .starts_with("1 todos: 0 completed, 1 in_progress, 0 pending, 0 cancelled"),
         "patch writes return a counts summary: {}",
         patched.output
     );
     assert!(patched.output.contains("Changed:") && patched.output.contains("Updated brief"));
-    let noop = tool.execute(json!({"update": [{"name": "Implement", "status": "in_progress"}]}), context()).await.unwrap();
+    let noop = tool
+        .execute(
+            json!({"update": [{"name": "Implement", "status": "in_progress"}]}),
+            context(),
+        )
+        .await
+        .unwrap();
     assert!(!noop.output.contains("Changed:"), "{}", noop.output);
     let output = tool.execute(json!({}), context()).await.unwrap();
     let public: Value = serde_json::from_str(&output.output).unwrap();

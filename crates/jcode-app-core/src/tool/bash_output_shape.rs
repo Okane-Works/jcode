@@ -78,7 +78,10 @@ pub fn fold_repeats(text: &str) -> String {
         let run = j - i;
         out.push(lines[i].to_string());
         if run >= REPEAT_FOLD_MIN && !lines[i].trim().is_empty() {
-            out.push(format!("... (previous line repeated {} more times)", run - 1));
+            out.push(format!(
+                "... (previous line repeated {} more times)",
+                run - 1
+            ));
         } else {
             for _ in 1..run {
                 out.push(lines[i].to_string());
@@ -127,7 +130,11 @@ pub fn shape(raw: &str, max_chars: usize, spill: impl FnOnce(&str) -> Option<Str
     // Cut on line boundaries where possible.
     let head_end = {
         let b = floor_boundary(&cleaned, head_budget);
-        cleaned[..b].rfind('\n').map(|p| p + 1).filter(|p| *p > head_budget / 2).unwrap_or(b)
+        cleaned[..b]
+            .rfind('\n')
+            .map(|p| p + 1)
+            .filter(|p| *p > head_budget / 2)
+            .unwrap_or(b)
     };
     let tail_start = {
         let b = ceil_boundary(&cleaned, cleaned.len().saturating_sub(tail_budget));
@@ -146,7 +153,11 @@ pub fn shape(raw: &str, max_chars: usize, spill: impl FnOnce(&str) -> Option<Str
         .take(MAX_MIDDLE_SIGNAL_LINES)
         .map(|l| {
             let end = floor_boundary(l, MAX_SIGNAL_LINE_CHARS);
-            if end < l.len() { format!("{}…", &l[..end]) } else { l.to_string() }
+            if end < l.len() {
+                format!("{}…", &l[..end])
+            } else {
+                l.to_string()
+            }
         })
         .collect();
 
@@ -162,7 +173,9 @@ pub fn shape(raw: &str, max_chars: usize, spill: impl FnOnce(&str) -> Option<Str
         middle.len()
     ));
     match &path {
-        Some(p) => text.push_str(&format!("; full output saved to {p} (use rg/sed -n/tail on it instead of re-running)]\n")),
+        Some(p) => text.push_str(&format!(
+            "; full output saved to {p} (use rg/sed -n/tail on it instead of re-running)]\n"
+        )),
         None => text.push_str("]\n"),
     }
     if !signals.is_empty() {
@@ -200,7 +213,10 @@ mod tests {
     #[test]
     fn folds_repeated_lines() {
         let raw = "a\nb\nb\nb\nb\nc\nd\nd";
-        assert_eq!(fold_repeats(raw), "a\nb\n... (previous line repeated 3 more times)\nc\nd\nd");
+        assert_eq!(
+            fold_repeats(raw),
+            "a\nb\n... (previous line repeated 3 more times)\nc\nd\nd"
+        );
     }
 
     #[test]

@@ -118,6 +118,9 @@ explicitly. The ceiling is a compaction budget, not an exact outbound token limi
 
 Rust SDK: `client.set_context_cap(session_id, Some(600_000))`.
 TypeScript SDK: `await client.setContextCap(sessionId, 600_000)`.
+Both return the effective budget. Live `token_usage` events also carry an optional
+`effective_budget` from the daemon, allowing clients to render a context meter
+without treating the model's full window as the active compaction budget.
 
 ### Per-seat compaction env overrides
 
@@ -138,9 +141,6 @@ Other sessions keep the daemon config. Invalid values are ignored. A session
 ceiling from `set_context_cap` still takes precedence over
 `JCODE_MAX_CONTEXT_TOKENS`. The overrides are not persisted, so a client must
 set them again when it resumes the session.
-Both return the effective budget. Live `token_usage` events also carry an optional
-`effective_budget` from the daemon, allowing clients to render a context meter
-without treating the model's full window as the active compaction budget.
 
 ## Token optimization
 

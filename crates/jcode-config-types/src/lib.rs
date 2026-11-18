@@ -376,6 +376,108 @@ impl Default for CompactionConfig {
     }
 }
 
+/// Environment variables that override `[compaction]` settings. Clients send
+/// these to a shared daemon so each session (e.g. an OpenRig seat) can carry
+/// its own compaction policy without changing daemon-wide config.
+pub const COMPACTION_ENV_VARS: &[&str] = &[
+    "JCODE_COMPACTION_MODE",
+    "JCODE_COMPACTION_REACTIVE_THRESHOLD",
+    "JCODE_COMPACTION_REACTIVE_THRESHOLD_TOKENS",
+    "JCODE_COMPACTION_PROACTIVE_FLOOR_TOKENS",
+    "JCODE_MAX_CONTEXT_TOKENS",
+];
+
+impl CompactionConfig {
+    /// Apply `JCODE_COMPACTION_*` / `JCODE_MAX_CONTEXT_TOKENS` overrides from
+    /// key/value pairs. Invalid values are ignored. Returns true when at least
+    /// one recognized key was applied.
+    pub fn apply_env_pairs<'a, I>(&mut self, pairs: I) -> bool
+    where
+        I: IntoIterator<Item = (&'a str, &'a str)>,
+    {
+        let mut applied = false;
+        for (key, value) in pairs {
+            let value = value.trim();
+            match key {
+                "JCODE_COMPACTION_MODE" => {
+                    if let Some(mode) = CompactionMode::parse(value) {
+                        self.mode = mode;
+                        applied = true;
+                    }
+                }
+                "JCODE_COMPACTION_REACTIVE_THRESHOLD" => {
+                    if let Ok(v) = value.parse::<f32>()
+                        && v.is_finite()
+                        && v > 0.0
+                        && v <= 1.0
+                    {
+                        self.reactive_threshold = v;
+                        applied = true;
+                    }
+                }
+                "JCODE_COMPACTION_REACTIVE_THRESHOLD_TOKENS" => {
+                    if let Ok(v) = value.parse::<usize>() {
+                        self.reactive_threshold_tokens = v;
+                        applied = true;
+                    }
+                }
+                "JCODE_COMPACTION_PROACTIVE_FLOOR_TOKENS" => {
+                    if let Ok(v) = value.parse::<usize>() {
+                        self.proactive_floor_tokens = v;
+                        applied = true;
+                    }
+                }
+                "JCODE_MAX_CONTEXT_TOKENS" => {
+                    if let Ok(v) = value.parse::<usize>() {
+                        self.max_context_tokens = v;
+                        applied = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        applied
+    }
+}
+
+#[cfg(test)]
+mod compaction_env_tests {
+    use super::*;
+
+    #[test]
+    fn applies_all_compaction_env_keys() {
+        let mut cfg = CompactionConfig::default();
+        let applied = cfg.apply_env_pairs([
+            ("JCODE_COMPACTION_MODE", " Proactive "),
+            ("JCODE_COMPACTION_REACTIVE_THRESHOLD", "0.5"),
+            ("JCODE_COMPACTION_REACTIVE_THRESHOLD_TOKENS", "120000"),
+            ("JCODE_COMPACTION_PROACTIVE_FLOOR_TOKENS", "0"),
+            ("JCODE_MAX_CONTEXT_TOKENS", "200000"),
+            ("TERM", "xterm"),
+        ]);
+        assert!(applied);
+        assert_eq!(cfg.mode, CompactionMode::Proactive);
+        assert_eq!(cfg.reactive_threshold, 0.5);
+        assert_eq!(cfg.reactive_threshold_tokens, 120_000);
+        assert_eq!(cfg.proactive_floor_tokens, 0);
+        assert_eq!(cfg.max_context_tokens, 200_000);
+    }
+
+    #[test]
+    fn ignores_invalid_values() {
+        let mut cfg = CompactionConfig::default();
+        let applied = cfg.apply_env_pairs([
+            ("JCODE_COMPACTION_MODE", "bogus"),
+            ("JCODE_COMPACTION_REACTIVE_THRESHOLD", "1.5"),
+            ("JCODE_MAX_CONTEXT_TOKENS", "-3"),
+        ]);
+        assert!(!applied);
+        assert_eq!(cfg.mode, CompactionMode::Reactive);
+        assert_eq!(cfg.reactive_threshold, 0.80);
+        assert_eq!(cfg.max_context_tokens, 0);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NamedProviderType {

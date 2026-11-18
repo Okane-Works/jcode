@@ -97,3 +97,24 @@ called by `workday upgrade`. Conflict reports go to `~/.jcode/sync/conflict-repo
   menubar-launched server picks it up. Unset means upstream behavior.
 - Tests: `cargo test -p jcode-base chatgpt_base`,
   `cargo test -p jcode-provider-anthropic-runtime oauth_api_url`.
+
+### 7. Token efficiency for long-lived OpenRig seats
+- Commits: `feat(bash): shape output ...` (bundled in `10f08191f`),
+  `perf(todo): return only changed items ...`,
+  `feat(compaction): stub large stale tool results ...`,
+  `feat(compaction): stub stale large tool results in API requests`, plus the
+  per-seat `JCODE_COMPACTION_*` env override commits.
+- Files: `crates/jcode-app-core/src/tool/bash.rs`, `tool/bash_output_shape.rs`,
+  `tool/todo.rs`, `crates/jcode-base/src/compaction.rs`,
+  `crates/jcode-config-types/src/lib.rs` (`CompactionConfig`),
+  `crates/jcode-base/src/config/env_overrides.rs`.
+- Intent: OpenRig seats grew past 350k tokens. Bash output is cleaned (ANSI,
+  progress bars, repeated lines) and cut to head+tail at 12k chars, with the full output saved to
+  scratch (`JCODE_BASH_OUTPUT_MAX_CHARS`, 0 = legacy). Todo patch writes return
+  only deltas. Old large tool results are stubbed in outgoing requests only
+  (`[compaction] stale_tool_result_turns/max_chars`, 0 disables). Per-seat env
+  overrides let implementer seats compact earlier than leads.
+- Tests: `cargo test -p jcode-app-core bash_`, `cargo test -p jcode-app-core todo`,
+  `cargo test -p jcode-base compaction`.
+- Related local config (not code): `~/.jcode/hooks/rtk-rewrite.py` wired as
+  `[hooks] pre_tool_transform` routes bash through `rtk rewrite`.

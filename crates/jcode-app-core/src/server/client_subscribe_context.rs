@@ -104,6 +104,15 @@ pub(super) fn new_session_system_prompt<'a>(
     }
 }
 
+/// Separate per-session compaction overrides from terminal identity in a
+/// client's Subscribe env snapshot. Returns `(compaction, terminal)`.
+pub(super) fn split_compaction_env(
+    env: Vec<(String, String)>,
+) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    env.into_iter()
+        .partition(|(key, _)| crate::config::COMPACTION_ENV_VARS.contains(&key.as_str()))
+}
+
 pub(super) fn initial_subscribe_terminal_env(request: &Request) -> Vec<(String, String)> {
     match request {
         Request::Subscribe { terminal_env, .. } => terminal_env.clone(),

@@ -290,7 +290,8 @@ pub(super) async fn handle_client(
                 return Ok(());
             }
         };
-    let mut active_terminal_env = initial_subscribe_terminal_env(&initial_request);
+    let (_, mut active_terminal_env) =
+        split_compaction_env(initial_subscribe_terminal_env(&initial_request));
 
     // Per-client state
     let mut client_is_processing = false;
@@ -1577,6 +1578,8 @@ pub(super) async fn handle_client(
                 recent_history_messages = history_base.and_then(|base| base.recent_messages);
                 supports_user_response = requested_user_response;
                 supports_server_failover = requested_server_failover;
+                let (compaction_env, terminal_env) =
+                    split_compaction_env(terminal_env);
                 active_terminal_env = terminal_env;
                 current_client_instance_id = client_instance_id.clone();
                 {
@@ -1765,6 +1768,10 @@ pub(super) async fn handle_client(
                         &client_session_id,
                         crate::config::config().features.auto_poke,
                     )?;
+                }
+                if !compaction_env.is_empty() {
+                    let compaction = agent.lock().await.registry().compaction();
+                    compaction.write().await.set_env_overrides(compaction_env);
                 }
                 client_subscribed = true;
                 provisional_session = false;

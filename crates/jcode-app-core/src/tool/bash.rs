@@ -24,7 +24,6 @@ use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
-const MAX_OUTPUT_LEN: usize = 30000;
 const DEFAULT_TIMEOUT_MS: u64 = 120000;
 const PROGRESS_MARKER_PREFIX: &str = "JCODE_PROGRESS ";
 const CHECKPOINT_MARKER_PREFIX: &str = "JCODE_CHECKPOINT ";
@@ -760,11 +759,33 @@ fn build_detached_shell_wrapper(command: &str) -> StdCommand {
     cmd
 }
 
-fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
-    if output.len() > MAX_OUTPUT_LEN {
-        output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
-        output.push_str("\n... (output truncated)");
-    }
+#[cfg(not(windows))]
+fn spill_full_output(raw: &str) -> Option<String> {
+    let dir = tool_scratch_dir()?.join("bash-output");
+    crate::storage::ensure_dir(&dir).ok()?;
+    let path = dir.join(format!(
+        "{}-{}.log",
+        Utc::now().format("%Y%m%dT%H%M%S%.3f"),
+        std::process::id()
+    ));
+    std::fs::write(&path, raw).ok()?;
+    Some(path.display().to_string())
+}
+
+#[cfg(windows)]
+fn spill_full_output(raw: &str) -> Option<String> {
+    let dir = std::env::temp_dir().join("jcode-bash-output");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{}.log", Utc::now().format("%Y%m%dT%H%M%S%.3f")));
+    std::fs::write(&path, raw).ok()?;
+    Some(path.display().to_string())
+}
+
+fn format_command_output(output: String, exit_code: Option<i32>) -> String {
+    let mut output = match bash_output_shape::configured_max_chars() {
+        Some(max) => bash_output_shape::shape(&output, max, spill_full_output).text,
+        None => bash_output_shape::legacy_truncate(output),
+    };
 
     if let Some(code) = exit_code.filter(|code| *code != 0) {
         output.push_str(&format!("\n\nExit code: {}", code));
@@ -776,6 +797,9 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
         output
     }
 }
+
+#[path = "bash_output_shape.rs"]
+mod bash_output_shape;
 
 #[cfg(test)]
 #[path = "bash_utf8_truncation_tests.rs"]

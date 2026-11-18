@@ -1360,6 +1360,16 @@ impl CompactionManager {
     /// Get messages for API call (with summary if compacted).
     /// Takes the full message list from the caller.
     pub fn messages_for_api_with(&mut self, all_messages: &[Message]) -> Vec<Message> {
+        let mut out = self.messages_for_api_unstubbed(all_messages);
+        stub_stale_tool_results(
+            &mut out,
+            self.compaction_config.stale_tool_result_turns,
+            self.compaction_config.stale_tool_result_max_chars,
+        );
+        out
+    }
+
+    fn messages_for_api_unstubbed(&mut self, all_messages: &[Message]) -> Vec<Message> {
         self.check_and_apply_compaction_with(all_messages);
         self.discard_oversized_openai_native_compaction();
 
@@ -1749,6 +1759,62 @@ use summary_generation::validate_compaction_summary;
 #[path = "compaction_transfer.rs"]
 mod transfer;
 pub use transfer::build_transfer_compaction_state;
+
+/// Chars of a stale tool result kept verbatim when it is stubbed.
+const STALE_TOOL_RESULT_KEEP_CHARS: usize = 500;
+
+fn is_user_prompt(message: &Message) -> bool {
+    message.role == Role::User
+        && message
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { .. }))
+        && !message
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+}
+
+/// Replace large tool results from old user turns with a short stub, in the
+/// outgoing request only. The elision boundary moves in steps of `turns` so
+/// the request prefix stays byte-identical between steps (prompt cache).
+pub(crate) fn stub_stale_tool_results(messages: &mut [Message], turns: usize, max_chars: usize) {
+    if turns == 0 || max_chars == 0 {
+        return;
+    }
+    let total = messages.iter().filter(|m| is_user_prompt(m)).count();
+    if total < turns * 2 {
+        return;
+    }
+    // Turns 1..=boundary are stale, leaving between `turns` and
+    // `2 * turns - 1` recent turns intact.
+    let boundary = ((total - turns) / turns) * turns;
+    let mut turn = 0usize;
+    for message in messages.iter_mut() {
+        if is_user_prompt(message) {
+            turn += 1;
+        }
+        if turn > boundary {
+            break;
+        }
+        let needs = message.content.iter().any(|b| {
+            matches!(b, ContentBlock::ToolResult { content, .. } if content.chars().count() > max_chars)
+        });
+        if !needs {
+            continue;
+        }
+        // SharedContent is copy-on-write, so the stored transcript is untouched.
+        for block in message.content.iter_mut() {
+            if let ContentBlock::ToolResult { content, .. } = block {
+                let n = content.chars().count();
+                if n > max_chars {
+                    let head: String = content.chars().take(STALE_TOOL_RESULT_KEEP_CHARS).collect();
+                    *content = format!("{head}\n[older output elided, {n} chars; rerun if needed]");
+                }
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 #[path = "compaction_tests.rs"]

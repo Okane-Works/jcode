@@ -357,3 +357,52 @@ mod cache_tests {
         }
     }
 }
+
+/// Default ChatGPT/Codex OAuth backend base URL.
+pub const CHATGPT_API_BASE_DEFAULT: &str = "https://chatgpt.com/backend-api/codex";
+
+/// Resolve the ChatGPT/Codex OAuth ("seat") backend base URL.
+///
+/// Defaults to `https://chatgpt.com/backend-api/codex`. Set
+/// `JCODE_CHATGPT_API_BASE` (an absolute `http(s)://` URL) to route Codex seat
+/// traffic through a local proxy such as Headroom
+/// (`http://127.0.0.1:8787/v1`), which forwards ChatGPT-authenticated requests
+/// to the Codex backend. `OPENAI_BASE_URL` is intentionally not consulted here,
+/// since it targets API-key endpoints.
+pub fn resolve_chatgpt_api_base() -> String {
+    chatgpt_api_base_from(std::env::var("JCODE_CHATGPT_API_BASE").ok().as_deref())
+}
+
+fn chatgpt_api_base_from(raw: Option<&str>) -> String {
+    let Some(trimmed) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return CHATGPT_API_BASE_DEFAULT.to_string();
+    };
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        crate::logging::warn(&format!(
+            "Ignoring invalid JCODE_CHATGPT_API_BASE '{}'; expected an absolute http(s):// URL",
+            trimmed
+        ));
+        return CHATGPT_API_BASE_DEFAULT.to_string();
+    }
+    trimmed
+        .trim_end_matches('/')
+        .trim_end_matches("/responses")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+#[cfg(test)]
+mod chatgpt_base_tests {
+    use super::*;
+
+    #[test]
+    fn chatgpt_base_defaults_and_overrides() {
+        assert_eq!(chatgpt_api_base_from(None), CHATGPT_API_BASE_DEFAULT);
+        assert_eq!(chatgpt_api_base_from(Some("  ")), CHATGPT_API_BASE_DEFAULT);
+        assert_eq!(chatgpt_api_base_from(Some("ftp://x")), CHATGPT_API_BASE_DEFAULT);
+        assert_eq!(
+            chatgpt_api_base_from(Some("http://127.0.0.1:8787/v1/responses/")),
+            "http://127.0.0.1:8787/v1"
+        );
+    }
+}

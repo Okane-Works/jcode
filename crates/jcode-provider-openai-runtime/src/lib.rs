@@ -1299,9 +1299,9 @@ impl OpenAIProvider {
 
     fn responses_url(credentials: &CodexCredentials) -> String {
         let base = if Self::is_chatgpt_mode(credentials) {
-            // ChatGPT/Codex OAuth backend is fixed; a custom base only applies
-            // to API-key usage of the native Responses API.
-            CHATGPT_API_BASE.to_string()
+            // ChatGPT/Codex OAuth backend; overridable via JCODE_CHATGPT_API_BASE
+            // (e.g. a Headroom proxy). OPENAI_BASE_URL only applies to API keys.
+            jcode_base::provider::openai::resolve_chatgpt_api_base()
         } else {
             Self::resolve_api_base()
         };

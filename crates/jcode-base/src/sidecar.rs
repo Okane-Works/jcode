@@ -25,7 +25,6 @@ const SIDECAR_CLAUDE_MODEL: &str = "claude-haiku-4-5-20251001";
 
 /// OpenAI Responses API
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
-const CHATGPT_API_BASE: &str = "https://chatgpt.com/backend-api/codex";
 const OPENAI_RESPONSES_PATH: &str = "responses";
 /// See `ORIGINATOR` in jcode-provider-openai-runtime: Jcode identifies itself.
 const OPENAI_ORIGINATOR: &str = "jcode";
@@ -389,8 +388,9 @@ impl Sidecar {
             .context("Failed to load OpenAI/Codex credentials for sidecar")?;
 
         let is_chatgpt_mode = !creds.refresh_token.is_empty() || creds.id_token.is_some();
+        let chatgpt_base = crate::provider::openai::resolve_chatgpt_api_base();
         let base = if is_chatgpt_mode {
-            CHATGPT_API_BASE
+            chatgpt_base.as_str()
         } else {
             OPENAI_API_BASE
         };

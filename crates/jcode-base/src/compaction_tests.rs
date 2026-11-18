@@ -1236,3 +1236,70 @@ async fn refused_compaction_keeps_original_messages_issue_2089() {
 
 #[path = "compaction_tests_additional_tests.rs"]
 mod additional_test_new_manager;
+
+fn stale_fixture(turns: usize, big: usize) -> Vec<Message> {
+    let mut v = Vec::new();
+    for i in 0..turns {
+        v.push(Message::user(&format!("prompt {i}")));
+        v.push(Message::tool_result(
+            &format!("t{i}"),
+            &"x".repeat(big),
+            false,
+        ));
+    }
+    v
+}
+
+fn tool_text(m: &Message) -> &str {
+    match &m.content[0] {
+        ContentBlock::ToolResult { content, .. } => content,
+        _ => panic!("not a tool result"),
+    }
+}
+
+#[test]
+fn stale_tool_results_stubbed_in_coarse_steps_without_mutating_store() {
+    let stored = stale_fixture(19, 3000);
+    let mut out = stored.clone();
+    stub_stale_tool_results(&mut out, 10, 2000);
+    // 19 turns < 2*10: nothing stubbed yet.
+    assert!(
+        out.iter().all(
+            |m| m.role != Role::User || !tool_text_opt(m).is_some_and(|t| t.contains("elided"))
+        )
+    );
+
+    let stored = stale_fixture(25, 3000);
+    let mut out = stored.clone();
+    stub_stale_tool_results(&mut out, 10, 2000);
+    // boundary = 10: turns 1..=10 stubbed, 11.. intact.
+    assert!(tool_text(&out[1]).contains("[older output elided, 3000 chars; rerun if needed]"));
+    assert!(tool_text(&out[1]).len() < 600);
+    assert!(tool_text(&out[19]).contains("elided"));
+    assert_eq!(tool_text(&out[21]).len(), 3000);
+    // Stored transcript untouched.
+    assert_eq!(tool_text(&stored[1]).len(), 3000);
+
+    // Prefix stable as turns grow within a step.
+    let mut out2 = stale_fixture(29, 3000);
+    stub_stale_tool_results(&mut out2, 10, 2000);
+    assert_eq!(tool_text(&out2[21]).len(), 3000);
+    assert_eq!(tool_text(&out2[1]), tool_text(&out[1]));
+}
+
+#[test]
+fn stale_tool_results_small_or_disabled_untouched() {
+    let mut out = stale_fixture(30, 1500);
+    stub_stale_tool_results(&mut out, 10, 2000);
+    assert_eq!(tool_text(&out[1]).len(), 1500);
+    let mut out = stale_fixture(30, 3000);
+    stub_stale_tool_results(&mut out, 0, 2000);
+    assert_eq!(tool_text(&out[1]).len(), 3000);
+}
+
+fn tool_text_opt(m: &Message) -> Option<&str> {
+    match m.content.first() {
+        Some(ContentBlock::ToolResult { content, .. }) => Some(content),
+        _ => None,
+    }
+}

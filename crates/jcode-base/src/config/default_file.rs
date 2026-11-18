@@ -513,6 +513,11 @@ reactive_threshold_tokens = 400000
 proactive_floor = 0.40
 proactive_floor_tokens = 150000
 # Set proactive_floor_tokens = 0 to use only the percentage floor.
+# Request-only stubbing of large tool results from older user turns. The
+# boundary advances in steps of stale_tool_result_turns to keep prompt caches
+# stable. Set either to 0 to disable.
+stale_tool_result_turns = 10
+stale_tool_result_max_chars = 2000
 
 [acp]
 # Agent Client Protocol adapter compatibility profile: standard, extended, or full.

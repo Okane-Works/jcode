@@ -5,9 +5,13 @@ use super::format_command_output;
 #[test]
 fn format_command_output_truncates_on_utf8_boundary() {
     let input = format!("{}é", "a".repeat(29_999));
-    let output = format_command_output(input, None);
+    let output = super::bash_output_shape::legacy_truncate(input.clone());
     assert!(output.ends_with("\n... (output truncated)"));
     assert!(output.starts_with(&"a".repeat(29_999)));
+    // Default shaping keeps output within budget on a UTF-8 boundary.
+    let shaped = format_command_output(input, None);
+    assert!(shaped.len() < 29_999);
+    assert!(shaped.ends_with('é'));
 }
 
 #[cfg(windows)]

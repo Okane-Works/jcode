@@ -342,6 +342,15 @@ pub struct CompactionConfig {
     /// on large-window providers. This bounds the compaction trigger budget,
     /// not the final request size when recent messages cannot be compacted.
     pub max_context_tokens: usize,
+
+    /// When sending to the provider, tool results older than this many user
+    /// turns are stubbed (the stored transcript is untouched). The boundary
+    /// advances in steps of this size so prompt-cache prefixes stay stable.
+    /// 0 disables.
+    pub stale_tool_result_turns: usize,
+
+    /// Only tool results longer than this many chars are stubbed. 0 disables.
+    pub stale_tool_result_max_chars: usize,
 }
 
 impl Default for CompactionConfig {
@@ -361,6 +370,8 @@ impl Default for CompactionConfig {
             relevance_keep_threshold: 0.65,
             goal_window_turns: 5,
             max_context_tokens: 0,
+            stale_tool_result_turns: 10,
+            stale_tool_result_max_chars: 2000,
         }
     }
 }

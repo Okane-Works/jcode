@@ -399,7 +399,10 @@ mod chatgpt_base_tests {
     fn chatgpt_base_defaults_and_overrides() {
         assert_eq!(chatgpt_api_base_from(None), CHATGPT_API_BASE_DEFAULT);
         assert_eq!(chatgpt_api_base_from(Some("  ")), CHATGPT_API_BASE_DEFAULT);
-        assert_eq!(chatgpt_api_base_from(Some("ftp://x")), CHATGPT_API_BASE_DEFAULT);
+        assert_eq!(
+            chatgpt_api_base_from(Some("ftp://x")),
+            CHATGPT_API_BASE_DEFAULT
+        );
         assert_eq!(
             chatgpt_api_base_from(Some("http://127.0.0.1:8787/v1/responses/")),
             "http://127.0.0.1:8787/v1"

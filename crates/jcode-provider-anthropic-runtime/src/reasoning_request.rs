@@ -11,7 +11,11 @@ const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 pub(super) fn with_fast_mode_beta(base: &str, request: &ApiRequest) -> String {
     let needs_beta = request.speed.as_deref() == Some("fast")
         && AnthropicProvider::fast_mode_support(&request.model) == Some(true);
-    if needs_beta && !base.split(',').any(|header| header.trim() == FAST_MODE_BETA) {
+    if needs_beta
+        && !base
+            .split(',')
+            .any(|header| header.trim() == FAST_MODE_BETA)
+    {
         if base.is_empty() {
             FAST_MODE_BETA.to_string()
         } else {

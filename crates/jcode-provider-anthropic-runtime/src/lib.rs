@@ -65,6 +65,43 @@ const API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// OAuth endpoint (with beta=true query param)
 const API_URL_OAUTH: &str = "https://api.anthropic.com/v1/messages?beta=true";
 
+/// OAuth (Claude subscription seat) Messages URL. Defaults to
+/// api.anthropic.com. `ANTHROPIC_BASE_URL` is deliberately ignored here; set
+/// the explicit opt-in `JCODE_CLAUDE_OAUTH_API_BASE` (e.g. a local Headroom
+/// proxy, `http://127.0.0.1:8787`) to route seat traffic through a
+/// transparent passthrough proxy.
+fn oauth_api_url() -> String {
+    oauth_api_url_from(std::env::var("JCODE_CLAUDE_OAUTH_API_BASE").ok().as_deref())
+}
+
+fn oauth_api_url_from(raw: Option<&str>) -> String {
+    match raw
+        .map(|v| v.trim().trim_end_matches('/'))
+        .filter(|v| v.starts_with("http://") || v.starts_with("https://"))
+    {
+        Some(base) => {
+            let base = base.trim_end_matches("/messages").trim_end_matches("/v1");
+            format!("{base}/v1/messages?beta=true")
+        }
+        None => API_URL_OAUTH.to_string(),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn oauth_api_url_override() {
+    assert_eq!(oauth_api_url_from(None), API_URL_OAUTH);
+    assert_eq!(oauth_api_url_from(Some("bogus")), API_URL_OAUTH);
+    assert_eq!(
+        oauth_api_url_from(Some("http://127.0.0.1:8787/")),
+        "http://127.0.0.1:8787/v1/messages?beta=true"
+    );
+    assert_eq!(
+        oauth_api_url_from(Some("http://h/v1/messages")),
+        "http://h/v1/messages?beta=true"
+    );
+}
+
 fn direct_api_url() -> String {
     let base = std::env::var("JCODE_ANTHROPIC_API_BASE")
         .ok()
@@ -2029,8 +2066,9 @@ async fn stream_response(
     let connect_start = std::time::Instant::now();
     let stream_idle_timeout = jcode_base::provider::stream_idle_timeout();
     // Build request with appropriate auth headers
+    let oauth_url = oauth_api_url();
     let url = if is_oauth {
-        API_URL_OAUTH
+        oauth_url.as_str()
     } else {
         direct_transport.api_url.as_str()
     };
